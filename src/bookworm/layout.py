@@ -16,17 +16,13 @@ from . import motifs
 from .artdirection import ArtDirection
 from .formats import BARCODE_H_MM, BARCODE_W_MM, Geometry
 from .palettes import Palette, contrasting_ink
+from .svg import n as _n
+from .svg import rect as _rect
 from .typography import TextBlock, face, fit_display, umlaut_leading, wrap_body
-
-
-def _n(v: float) -> str:
-    return f"{v:.3f}"
 
 
 @dataclass
 class Content:
-    """The copy that goes on the cover."""
-
     title: str
     author: str
     genre_line: str = "Roman"
@@ -35,6 +31,16 @@ class Content:
     isbn: str = ""
     price: str = ""
     translator: str = ""
+
+    def summary(self) -> dict[str, str]:
+        """The copy worth reporting back; isbn/price/translator are inputs."""
+        return {
+            "title": self.title,
+            "author": self.author,
+            "genre_line": self.genre_line,
+            "blurb": self.blurb,
+            "imprint": self.imprint,
+        }
 
 
 @dataclass
@@ -51,16 +57,17 @@ class Ctx:
 
     @property
     def margin(self) -> float:
-        """House margin: a shade over 8% of the trim width."""
-        return self.geo.panel_w_mm * 0.085
+        return self.geo.panel_w_mm * MARGIN_RATIO
 
 
 Rect = tuple[float, float, float, float]
 
+#: House margin, as a fraction of the trim width. The artwork rect and the type
+#: placement both derive from it, so it has to be one number.
+MARGIN_RATIO = 0.085
 
-# --------------------------------------------------------------------------- #
-# Type placement helpers
-# --------------------------------------------------------------------------- #
+
+# --- Type placement helpers ---
 
 
 def cased(text: str, mode: str) -> str:
@@ -68,10 +75,17 @@ def cased(text: str, mode: str) -> str:
     return text.upper() if mode == "upper" else text
 
 
+def _align_x(x: float, width: float, align: str) -> float:
+    if align == "center":
+        return x - width / 2
+    if align == "right":
+        return x - width
+    return x
+
+
 def draw_block(
     block: TextBlock,
     family: str,
-    weight: str,
     *,
     x: float,
     cap_top: float,
@@ -81,19 +95,13 @@ def draw_block(
     """Draw a fitted block from its cap line. Returns the SVG and the last baseline."""
     if not block.lines:
         return "", cap_top
-    f = face(family, weight)
+    f = face(family, "display")
     out = []
     baseline = cap_top + f.cap_height * block.size
     for i, line in enumerate(block.lines):
-        w = block.widths[i]
-        if align == "center":
-            lx = x - w / 2
-        elif align == "right":
-            lx = x - w
-        else:
-            lx = x
+        lx = _align_x(x, block.widths[i], align)
         y = baseline + i * block.leading * block.size
-        frag, _ = f.run(line, block.size, tracking=block.tracking, fill=fill, x=lx, y=y)
+        frag = f.run(line, block.size, tracking=block.tracking, fill=fill, x=lx, y=y)
         out.append(frag)
     last = baseline + (len(block.lines) - 1) * block.leading * block.size
     return "".join(out), last
@@ -115,15 +123,9 @@ def draw_label(
     if not text:
         return "", cap_top
     f = face(family, weight)
-    w = f.measure(text, tracking) * size
-    if align == "center":
-        lx = x - w / 2
-    elif align == "right":
-        lx = x - w
-    else:
-        lx = x
+    lx = _align_x(x, f.measure(text, tracking) * size, align)
     baseline = cap_top + f.cap_height * size
-    frag, _ = f.run(text, size, tracking=tracking, fill=fill, x=lx, y=baseline)
+    frag = f.run(text, size, tracking=tracking, fill=fill, x=lx, y=baseline)
     return frag, baseline
 
 
@@ -136,30 +138,21 @@ def draw_paragraph(
     cap_top: float,
     measure: float,
     fill: str,
-    leading: float = 1.45,
+    leading: float = 1.5,
     max_lines: int | None = None,
-    weight: str = "regular",
 ) -> tuple[str, float]:
     """Body copy for the back cover and flaps."""
     if not text:
         return "", cap_top
-    f = face(family, weight)
-    lines = wrap_body(text, family, size, measure, weight=weight, max_lines=max_lines)
+    f = face(family, "regular")
+    lines = wrap_body(text, family, size, measure, max_lines=max_lines)
     out = []
     baseline = cap_top + f.cap_height * size
     for i, line in enumerate(lines):
         if line:
-            frag, _ = f.run(line, size, fill=fill, x=x, y=baseline + i * leading * size)
+            frag = f.run(line, size, fill=fill, x=x, y=baseline + i * leading * size)
             out.append(frag)
     return "".join(out), baseline + (len(lines) - 1) * leading * size
-
-
-def _rect(x: float, y: float, w: float, h: float, fill: str, opacity: float = 1.0) -> str:
-    op = "" if opacity >= 1.0 else f' opacity="{_n(opacity)}"'
-    return (
-        f'<rect x="{_n(x)}" y="{_n(y)}" width="{_n(w)}" height="{_n(h)}" '
-        f'fill="{fill}"{op}/>'
-    )
 
 
 def _rule(x: float, y: float, w: float, thickness: float, fill: str) -> str:
@@ -174,10 +167,8 @@ def _image(uri: str, rect: Rect) -> str:
     )
 
 
-# --------------------------------------------------------------------------- #
 # Artwork placement -- decided before the image is generated so the image model
 # can be asked for the right aspect ratio.
-# --------------------------------------------------------------------------- #
 
 
 def artwork_plan(direction: ArtDirection, geo: Geometry) -> Rect | None:
@@ -187,23 +178,19 @@ def artwork_plan(direction: ArtDirection, geo: Geometry) -> Rect | None:
     b = geo.bleed_mm
     cw, ch = geo.front_bleed_w_mm, geo.front_bleed_h_mm
     pw, ph = geo.panel_w_mm, geo.panel_h_mm
-    m = pw * 0.085
+    m = pw * MARGIN_RATIO
     t = direction.template
     if t == "photo_duotone":
         return (0.0, 0.0, cw, b + ph * 0.62)
-    if t == "rororo_band":
-        return (0.0, 0.0, cw, ch)
     if t == "kiwi_flat":
         top = b + ph * 0.52
         return (0.0, top, cw, ch - top)
     if t == "didone_centre":
         return (b + m, b + ph * 0.28, pw - 2 * m, ph * 0.40)
-    if t == "illustrated_full":
-        return (0.0, 0.0, cw, ch)
-    return (0.0, 0.0, cw, ch)
+    return (0.0, 0.0, cw, ch)  # rororo_band, illustrated_full: full bleed
 
 
-def _artwork_or_motif(ctx: Ctx, rect: Rect | None, clip_id: str) -> str:
+def _artwork_or_motif(ctx: Ctx, rect: Rect | None) -> str:
     """Prefer generated artwork; fall back to the procedural motif in the same box."""
     if rect is None:
         return ""
@@ -211,16 +198,12 @@ def _artwork_or_motif(ctx: Ctx, rect: Rect | None, clip_id: str) -> str:
         return _image(ctx.artwork_uri, rect)
     if ctx.direction.motif != "none":
         x, y, w, h = rect
-        return motifs.draw(
-            ctx.direction.motif, x, y, w, h, ctx.palette, ctx.seed, clip_id=clip_id
-        )
+        return motifs.draw(ctx.direction.motif, x, y, w, h, ctx.palette, ctx.seed)
     return ""
 
 
-# --------------------------------------------------------------------------- #
 # Front templates. Each draws in front-canvas coordinates, origin at the top-left
 # of the bleed box, and assumes the ground has already been laid down.
-# --------------------------------------------------------------------------- #
 
 
 def _front_kiwi_flat(ctx: Ctx) -> str:
@@ -231,7 +214,7 @@ def _front_kiwi_flat(ctx: Ctx) -> str:
     out = []
 
     rect = artwork_plan(d, g)
-    out.append(_artwork_or_motif(ctx, rect, "clip-front-art"))
+    out.append(_artwork_or_motif(ctx, rect))
 
     author_size = pw * 0.040
     frag, author_base = draw_label(
@@ -270,7 +253,7 @@ def _front_kiwi_flat(ctx: Ctx) -> str:
         tracking=-0.025,
     )
     frag, title_base = draw_block(
-        title, fam, "display", x=left, cap_top=title_top, fill=p.ink
+        title, fam, x=left, cap_top=title_top, fill=p.ink
     )
     out.append(frag)
 
@@ -310,7 +293,7 @@ def _front_rororo_band(ctx: Ctx) -> str:
     out = []
 
     rect = artwork_plan(d, g)
-    out.append(_artwork_or_motif(ctx, rect, "clip-front-art"))
+    out.append(_artwork_or_motif(ctx, rect))
 
     band_top = b + ph * 0.45
     band_h = ph * 0.30
@@ -346,7 +329,6 @@ def _front_rororo_band(ctx: Ctx) -> str:
     frag, _ = draw_block(
         title,
         fam,
-        "display",
         x=b + pw / 2,
         cap_top=band_top + (band_h - visual_h) / 2,
         align="center",
@@ -410,7 +392,6 @@ def _front_type_block(ctx: Ctx) -> str:
     words = [w for w in cased(c.title, d.title_case).split() if w]
     if not words:
         words = ["OHNE", "TITEL"]
-    # Group into at most five lines, then set each line to fill the measure.
     max_lines = min(5, len(words))
     per = -(-len(words) // max_lines)
     lines = [" ".join(words[i : i + per]) for i in range(0, len(words), per)]
@@ -428,7 +409,7 @@ def _front_type_block(ctx: Ctx) -> str:
     y = author_base + m * 0.8
     for line, size in zip(lines, sizes):
         w = f.measure(line, tracking) * size
-        frag, _ = f.run(
+        frag = f.run(
             line, size, tracking=tracking, fill=p.ink, x=left, y=y + f.cap_height * size
         )
         out.append(frag)
@@ -501,7 +482,6 @@ def _front_didone_centre(ctx: Ctx) -> str:
     title = fit_display(
         cased(c.title, d.title_case),
         fam,
-        weight="display",
         max_width=measure * 0.92,
         max_height=ph * 0.22,
         max_lines=4,
@@ -511,7 +491,6 @@ def _front_didone_centre(ctx: Ctx) -> str:
     frag, title_base = draw_block(
         title,
         fam,
-        "display",
         x=centre,
         cap_top=author_base + m * 0.9,
         align="center",
@@ -539,7 +518,7 @@ def _front_didone_centre(ctx: Ctx) -> str:
         y = genre_base + m * 0.9
         h = min(h, b + ph - m * 2.4 - y)
         if h > m:
-            out.append(_artwork_or_motif(ctx, (x, y, w, h), "clip-front-art"))
+            out.append(_artwork_or_motif(ctx, (x, y, w, h)))
 
     imprint_size = pw * 0.026
     frag, _ = draw_label(
@@ -564,7 +543,7 @@ def _front_photo_duotone(ctx: Ctx) -> str:
     out = []
 
     rect = artwork_plan(d, g)
-    out.append(_artwork_or_motif(ctx, rect, "clip-front-art"))
+    out.append(_artwork_or_motif(ctx, rect))
     art_bottom = rect[1] + rect[3] if rect else b + ph * 0.6
 
     author_size = pw * 0.042
@@ -594,7 +573,7 @@ def _front_photo_duotone(ctx: Ctx) -> str:
         tracking=-0.025,
     )
     frag, title_base = draw_block(
-        title, fam, "display", x=left, cap_top=title_top, fill=p.ink
+        title, fam, x=left, cap_top=title_top, fill=p.ink
     )
     out.append(frag)
 
@@ -638,7 +617,7 @@ def _front_illustrated_full(ctx: Ctx) -> str:
     out = []
 
     rect = artwork_plan(d, g)
-    out.append(_artwork_or_motif(ctx, rect, "clip-front-art"))
+    out.append(_artwork_or_motif(ctx, rect))
 
     # Panel geometry: inset from the trim, sitting low so the picture keeps the
     # upper two thirds, which is where an illustration's subject usually lives.
@@ -690,7 +669,6 @@ def _front_illustrated_full(ctx: Ctx) -> str:
     frag, title_base = draw_block(
         title,
         fam,
-        "display",
         x=panel_x + pad,
         cap_top=author_base + author_size * 0.8,
         fill=p.ink,
@@ -734,9 +712,7 @@ FRONT_TEMPLATES = {
 }
 
 
-# --------------------------------------------------------------------------- #
-# Back cover, spine, flaps
-# --------------------------------------------------------------------------- #
+# --- Back cover, spine, flaps ---
 
 
 def _teaser(text: str, sentences: int = 2) -> str:
@@ -784,7 +760,6 @@ def back_panel(ctx: Ctx, x: float, y: float) -> str:
         cap_top=genre_base + m * 0.9,
         measure=pw - 2 * m,
         fill=p.ink,
-        leading=1.5,
         max_lines=max_lines,
     )
     out.append(frag)
@@ -896,7 +871,7 @@ def spine_panel(ctx: Ctx, x: float, y: float) -> str:
     # Centre each run across the spine width: the baseline sits half a cap height
     # off centre, on the opposite side from the caps.
     inner = []
-    frag, _ = fd.run(
+    frag = fd.run(
         title,
         title_size,
         tracking=-0.01,
@@ -905,7 +880,7 @@ def spine_panel(ctx: Ctx, x: float, y: float) -> str:
         y=(w + fd.cap_height * title_size) / 2,
     )
     inner.append(frag)
-    frag, _ = fr.run(
+    frag = fr.run(
         author,
         author_size,
         tracking=0.1,
@@ -964,7 +939,6 @@ def flap_panel(ctx: Ctx, x: float, y: float, w: float, *, side: str) -> str:
             cap_top=base + m,
             measure=w - 2 * m,
             fill=p.ink,
-            leading=1.5,
             max_lines=int((ph - m * 4) / (size * 0.92 * 1.5)),
         )
         out.append(frag)
@@ -983,34 +957,40 @@ def flap_panel(ctx: Ctx, x: float, y: float, w: float, *, side: str) -> str:
     return "".join(out)
 
 
-# --------------------------------------------------------------------------- #
-# Print marks
-# --------------------------------------------------------------------------- #
+# --- Print marks ---
+
+
+HAIRLINE_MM = 0.2
+
+
+def _trim_box(x: float, y: float, w: float, h: float) -> str:
+    return (
+        f'<rect x="{_n(x)}" y="{_n(y)}" width="{_n(w)}" height="{_n(h)}" '
+        f'fill="none" stroke="#00A0A0" stroke-width="{_n(HAIRLINE_MM)}" '
+        f'stroke-dasharray="2 2"/>'
+    )
 
 
 def print_marks(ctx: Ctx) -> str:
     """Trim box and fold lines, outside the artwork, for proofing only."""
     g = ctx.geo
-    hair = 0.2
     out = [
-        f'<rect x="{_n(g.bleed_mm)}" y="{_n(g.bleed_mm)}" '
-        f'width="{_n(g.sheet_w_mm - 2 * g.bleed_mm)}" '
-        f'height="{_n(g.sheet_h_mm - 2 * g.bleed_mm)}" fill="none" '
-        f'stroke="#00A0A0" stroke-width="{_n(hair)}" stroke-dasharray="2 2"/>'
+        _trim_box(
+            g.bleed_mm, g.bleed_mm,
+            g.sheet_w_mm - 2 * g.bleed_mm, g.sheet_h_mm - 2 * g.bleed_mm,
+        )
     ]
     for panel in g.panels:
         if panel.name in ("spine", "front", "front_flap"):
             out.append(
                 f'<line x1="{_n(panel.x_mm)}" y1="0" x2="{_n(panel.x_mm)}" '
-                f'y2="{_n(g.sheet_h_mm)}" stroke="#E000E0" stroke-width="{_n(hair)}" '
+                f'y2="{_n(g.sheet_h_mm)}" stroke="#E000E0" stroke-width="{_n(HAIRLINE_MM)}" '
                 f'stroke-dasharray="3 2"/>'
             )
     return "".join(out)
 
 
-# --------------------------------------------------------------------------- #
-# Documents
-# --------------------------------------------------------------------------- #
+# --- Documents ---
 
 
 def _svg(width_mm: float, height_mm: float, body: str) -> str:
@@ -1026,14 +1006,9 @@ def build_front(ctx: Ctx) -> str:
     """Front cover with bleed on all four edges."""
     g, p = ctx.geo, ctx.palette
     cw, ch = g.front_bleed_w_mm, g.front_bleed_h_mm
-    template = FRONT_TEMPLATES.get(ctx.direction.template, _front_kiwi_flat)
-    body = _rect(0, 0, cw, ch, p.ground) + template(ctx)
+    body = _rect(0, 0, cw, ch, p.ground) + FRONT_TEMPLATES[ctx.direction.template](ctx)
     if ctx.marks:
-        body += (
-            f'<rect x="{_n(g.bleed_mm)}" y="{_n(g.bleed_mm)}" '
-            f'width="{_n(g.panel_w_mm)}" height="{_n(g.panel_h_mm)}" fill="none" '
-            f'stroke="#00A0A0" stroke-width="0.2" stroke-dasharray="2 2"/>'
-        )
+        body += _trim_box(g.bleed_mm, g.bleed_mm, g.panel_w_mm, g.panel_h_mm)
     return _svg(cw, ch, body)
 
 
@@ -1041,19 +1016,17 @@ def build_spread(ctx: Ctx) -> str:
     """The full flat sheet: back flap | back | spine | front | front flap."""
     g, p = ctx.geo, ctx.palette
     body = [_rect(0, 0, g.sheet_w_mm, g.sheet_h_mm, p.ground)]
-    front = g.panel("front")
 
     for panel in g.panels:
         if panel.name == "front":
             # The front template works in its own canvas, which carries bleed on
             # all four edges. On the sheet the spine edge is a fold, not a trim,
             # so clip the group there to stop the front bleeding over the spine.
-            template = FRONT_TEMPLATES.get(ctx.direction.template, _front_kiwi_flat)
             # Bleed past the fore-edge only when no flap follows the front panel.
             has_flap = any(pnl.name == "front_flap" for pnl in g.panels)
-            clip_w = front.w_mm + (0.0 if has_flap else g.bleed_mm)
+            clip_w = panel.w_mm + (0.0 if has_flap else g.bleed_mm)
             clip = (
-                f'<clipPath id="clip-front-panel"><rect x="{_n(front.x_mm)}" y="0" '
+                f'<clipPath id="clip-front-panel"><rect x="{_n(panel.x_mm)}" y="0" '
                 f'width="{_n(clip_w)}" height="{_n(g.sheet_h_mm)}"/></clipPath>'
             )
             # The clip lives on an outer group with no transform of its own: an
@@ -1061,9 +1034,9 @@ def build_spread(ctx: Ctx) -> str:
             # two on one group would shift the clip out of the sheet.
             body.append(
                 f'{clip}<g clip-path="url(#clip-front-panel)">'
-                f'<g transform="translate({_n(front.x_mm - g.bleed_mm)},0)">'
+                f'<g transform="translate({_n(panel.x_mm - g.bleed_mm)},0)">'
                 f"{_rect(0, 0, g.front_bleed_w_mm, g.front_bleed_h_mm, p.ground)}"
-                f"{template(ctx)}</g></g>"
+                f"{FRONT_TEMPLATES[ctx.direction.template](ctx)}</g></g>"
             )
         elif panel.name == "back":
             body.append(_rect(panel.x_mm, panel.y_mm, panel.w_mm, panel.h_mm, p.ground))

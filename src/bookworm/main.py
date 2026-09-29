@@ -11,9 +11,9 @@ from __future__ import annotations
 import logging
 import os
 import uuid
+from dataclasses import asdict
 from pathlib import Path
 
-from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -31,7 +31,6 @@ from .pipeline import create_cover
 from .render import ASSETS, DEFAULT_ASSETS
 from .typography import TYPE_FAMILIES
 
-load_dotenv()
 logging.basicConfig(level=os.environ.get("BOOKWORM_LOG_LEVEL", "INFO"))
 log = logging.getLogger("bookworm")
 
@@ -44,6 +43,11 @@ _MEDIA = {
     ".pdf": "application/pdf",
     ".json": "application/json",
 }
+
+
+def _file(path: Path) -> FileResponse:
+    media = _MEDIA.get(path.suffix, "application/octet-stream")
+    return FileResponse(path, media_type=media)
 
 app = FastAPI(
     title="bookworm",
@@ -111,18 +115,7 @@ def catalogue() -> CatalogueResponse:
         styles=list(STYLES),
         templates=list(TEMPLATES),
         type_families=list(TYPE_FAMILIES),
-        palettes=[
-            {
-                "key": p.key,
-                "label": p.label,
-                "ground": p.ground,
-                "ink": p.ink,
-                "accent": p.accent,
-                "secondary": p.secondary,
-                "tone": list(p.tone),
-            }
-            for p in PALETTES
-        ],
+        palettes=[asdict(p) for p in PALETTES],
         motifs=list(MOTIFS),
         assets=list(ASSETS),
     )
@@ -138,43 +131,21 @@ async def generate(
         ),
     ),
 ) -> Response | CoverResponse:
-    if inline is not None and inline not in ASSETS:
-        raise HTTPException(422, f"inline must be one of: {', '.join(ASSETS)}")
-
     assets = tuple(request.assets) if request.assets else DEFAULT_ASSETS
-    if inline is not None and inline not in assets:
-        assets = assets + (inline,)
+    if inline is not None:
+        if inline not in ASSETS:
+            raise HTTPException(422, f"inline must be one of: {', '.join(ASSETS)}")
+        if inline not in assets:
+            assets += (inline,)
 
     cover_id = uuid.uuid4().hex[:16]
     outdir = OUTPUT_DIR / cover_id
 
     try:
         result = await create_cover(
-            text=request.text,
-            title=request.title,
-            author=request.author,
-            outdir=outdir,
+            **request.model_dump(exclude={"format", "assets"}),
             format_key=request.format,
-            pages=request.pages,
-            dpi=request.dpi,
-            imprint=request.imprint,
-            isbn=request.isbn,
-            price=request.price,
-            translator=request.translator,
-            template=request.template,
-            type_family=request.type_family,
-            palette=request.palette,
-            artwork=request.artwork,
-            motif=request.motif,
-            genre_line=request.genre_line,
-            blurb=request.blurb,
-            style=request.style,
-            director=request.director,
-            treatment=request.treatment,
-            image_quality=request.image_quality,
-            seed=request.seed,
-            marks=request.marks,
-            spine_direction=request.spine_direction,
+            outdir=outdir,
             assets=assets,
         )
     except KeyError as exc:
@@ -183,10 +154,7 @@ async def generate(
         raise HTTPException(422, str(exc)) from exc
 
     if inline is not None:
-        path = Path(result["files"][inline])
-        return FileResponse(
-            path, media_type=_MEDIA.get(path.suffix, "application/octet-stream")
-        )
+        return _file(Path(result["files"][inline]))
 
     return CoverResponse(
         id=cover_id,
@@ -212,6 +180,4 @@ def asset(cover_id: str, filename: str) -> FileResponse:
     path = (OUTPUT_DIR / cover_id / filename).resolve()
     if not path.is_relative_to(OUTPUT_DIR) or not path.is_file():
         raise HTTPException(404, "not found")
-    return FileResponse(
-        path, media_type=_MEDIA.get(path.suffix, "application/octet-stream")
-    )
+    return _file(path)

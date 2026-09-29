@@ -11,19 +11,28 @@ import re
 import pytest
 from fastapi.testclient import TestClient
 
-from bookworm.artdirection import fallback_direction
+from bookworm.artdirection import (
+    TEMPLATES,
+    _genre_from_text,
+    fallback_direction,
+    system_prompt,
+)
 from bookworm.formats import FORMATS, geometry, resolve_format, spine_mm
-from bookworm.imagegen import build_prompt, cover_crop, duotone
-from bookworm.layout import Content, Ctx, artwork_plan, build_front, build_spread
+from bookworm.layout import (
+    Content,
+    Ctx,
+    _teaser,
+    artwork_plan,
+    build_front,
+    build_spread,
+)
 from bookworm.main import app
 from bookworm.typography import face, fit_display, umlaut_leading
 
 client = TestClient(app)
 
 
-# --------------------------------------------------------------------------- #
-# Geometry
-# --------------------------------------------------------------------------- #
+# --- Geometry ---
 
 
 def test_spine_grows_with_page_count():
@@ -62,9 +71,7 @@ def test_unknown_format_names_the_alternatives():
         resolve_format("no_such_format")
 
 
-# --------------------------------------------------------------------------- #
-# Typography
-# --------------------------------------------------------------------------- #
+# --- Typography ---
 
 
 def test_display_type_fits_the_measure():
@@ -105,9 +112,8 @@ def test_umlaut_opens_the_leading():
 
 def test_glyphs_are_outlined_and_scaled_to_the_em():
     f = face("geometric", "display")
-    svg, width = f.run("HH", 10.0, fill="#000000")
+    svg = f.run("HH", 10.0, fill="#000000")
     assert svg.startswith("<path")
-    assert 0 < width < 40
     coords = [abs(float(v)) for v in re.findall(r"-?\d+\.?\d*", svg)[:40]]
     # Font units would put these in the thousands; mm-scaled type must not.
     assert max(coords) < 200
@@ -117,13 +123,10 @@ def test_shaping_handles_german_orthography():
     f = face("geometric", "display")
     for text in ("Öäüß", "STRASSE", "Fluß"):
         assert f.measure(text) > 0
-        svg, _ = f.run(text, 10.0, fill="#000")
-        assert svg
+        assert f.run(text, 10.0, fill="#000")
 
 
-# --------------------------------------------------------------------------- #
-# Rendering
-# --------------------------------------------------------------------------- #
+# --- Rendering ---
 
 
 def _ctx(format_key="kiwi_paperback", pages=288, title="Die Reise", **kwargs):
@@ -147,10 +150,7 @@ def _ctx(format_key="kiwi_paperback", pages=288, title="Die Reise", **kwargs):
     )
 
 
-@pytest.mark.parametrize(
-    "template",
-    ["kiwi_flat", "rororo_band", "type_block", "didone_centre", "photo_duotone"],
-)
+@pytest.mark.parametrize("template", TEMPLATES)
 def test_every_template_renders_front_and_spread(template):
     ctx = _ctx(template=template)
     front = build_front(ctx)
@@ -260,8 +260,6 @@ def test_wide_spine_is_lettered():
 
 
 def test_teaser_keeps_the_opening_sentences():
-    from bookworm.layout import _teaser
-
     blurb = "Eine Frau geht fort. Sie kommt nicht zurück. Der Rest ist Weg."
     assert _teaser(blurb) == "Eine Frau geht fort. Sie kommt nicht zurück."
     assert _teaser("Ein Satz ohne Punkt") == "Ein Satz ohne Punkt."
@@ -277,35 +275,7 @@ def test_back_cover_teases_only_when_a_flap_carries_the_blurb():
     assert _ctx("kiwi_paperback").geo.flap_mm == 0
 
 
-# --------------------------------------------------------------------------- #
-# Image generation helpers
-# --------------------------------------------------------------------------- #
-
-
-def test_prompt_is_hardened_against_lettering():
-    prompt = build_prompt("A red door in fog", ("#E8412A", "#FFFFFF"))
-    assert "no letters" in prompt
-    assert "#E8412A" in prompt
-
-
-def test_cover_crop_hits_the_target_exactly():
-    from PIL import Image
-
-    out = cover_crop(Image.new("RGB", (1024, 1536), "white"), 800, 1200)
-    assert out.size == (800, 1200)
-
-
-def test_duotone_maps_onto_the_palette_ends():
-    from PIL import Image
-
-    src = Image.new("RGB", (4, 4), (0, 0, 0))
-    out = duotone(src, "#102030", "#FFFFFF")
-    assert out.getpixel((0, 0)) == (16, 32, 48)
-
-
-# --------------------------------------------------------------------------- #
-# HTTP
-# --------------------------------------------------------------------------- #
+# --- HTTP ---
 
 
 def test_healthz():
@@ -379,16 +349,12 @@ def test_asset_route_refuses_traversal(tmp_path, monkeypatch):
     assert client.get("/covers/..%2F..%2Fetc/passwd").status_code == 404
 
 
-# --------------------------------------------------------------------------- #
-# Style registers
-# --------------------------------------------------------------------------- #
+# --- Style registers ---
 
 
 def test_illustrated_register_asks_for_a_picture():
     """The default register must not quietly produce a type-only cover."""
-    from bookworm.artdirection import fallback_direction as fb
-
-    d = fb("Zwei Schwestern erben ein Haus.", "Das Haus", "J. Wiechert", "illustrated")
+    d = fallback_direction("Zwei Schwestern erben ein Haus.", "Das Haus", "J. Wiechert", "illustrated")
     assert d.artwork == "generated"
     assert d.template in ("illustrated_full", "photo_duotone")
     # A concrete, figurative prompt -- not a generic abstract wash.
@@ -397,15 +363,11 @@ def test_illustrated_register_asks_for_a_picture():
 
 
 def test_typographic_register_stays_austere():
-    from bookworm.artdirection import fallback_direction as fb
-
-    d = fb("Ein Essay über Sprache.", "Sprache", "A. Autor", "typographic")
+    d = fallback_direction("Ein Essay über Sprache.", "Sprache", "A. Autor", "typographic")
     assert d.template in ("type_block", "kiwi_flat", "rororo_band", "didone_centre")
 
 
 def test_style_conditions_the_system_prompt():
-    from bookworm.artdirection import system_prompt
-
     illustrated = system_prompt("illustrated")
     typographic = system_prompt("typographic")
     assert "ILLUSTRATED AND CHARMING" in illustrated
@@ -444,8 +406,6 @@ def test_genre_guess_is_not_fooled_by_german_compounds():
     That printed "Gedichte" on a novel. Only the no-model path uses this guess,
     which is the path chosen for speed -- so it has to be right.
     """
-    from bookworm.artdirection import _genre_from_text
-
     assert _genre_from_text(
         "sie erinnern sich an völlig verschiedene kindheiten"
     ) == "Roman"
@@ -461,14 +421,10 @@ def test_genre_guess_is_not_fooled_by_german_compounds():
 
 
 def test_genre_guess_defaults_to_roman():
-    from bookworm.artdirection import _genre_from_text
-
     assert _genre_from_text("zwei schwestern erben ein haus am hafen") == "Roman"
 
 
-# --------------------------------------------------------------------------- #
-# CORS
-# --------------------------------------------------------------------------- #
+# --- CORS ---
 
 
 def _preflight(origin: str):

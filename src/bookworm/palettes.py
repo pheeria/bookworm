@@ -22,15 +22,21 @@ class Palette:
     #: Rough register, used to match a palette to a mood without a model call.
     tone: tuple[str, ...] = ()
 
-    @property
-    def is_dark(self) -> bool:
-        return luminance(self.ground) < 0.45
+
+def rgb(hex_colour: str) -> tuple[int, int, int]:
+    r, g, b = bytes.fromhex(hex_colour.lstrip("#"))
+    return r, g, b
 
 
 def luminance(hex_colour: str) -> float:
-    h = hex_colour.lstrip("#")
-    r, g, b = (int(h[i : i + 2], 16) / 255 for i in (0, 2, 4))
+    r, g, b = (c / 255 for c in rgb(hex_colour))
     return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+
+def darkest_and_lightest(hexes: tuple[str, ...]) -> tuple[str, str]:
+    """The two ends of a palette, for mapping artwork onto it."""
+    ordered = sorted(hexes, key=luminance)
+    return ordered[0], ordered[-1]
 
 
 def contrasting_ink(ground: str, ink: str, alt: str) -> str:

@@ -23,7 +23,6 @@ from bookworm.pipeline import create_cover
 class _StubImage:
     def __init__(self, b64: str) -> None:
         self.b64_json = b64
-        self.url = None
         self.revised_prompt = "stubbed"
 
 
@@ -88,6 +87,19 @@ async def test_duotone_treatment_pulls_the_artwork_into_the_palette(stub_openai)
     # Every pixel is on the ramp between the two palette ends.
     for r, g, b in colours:
         assert 0x10 <= r <= 0xED and 0x1A <= g <= 0xE7 and 0x2C <= b <= 0xDA
+
+
+def test_duotone_maps_the_luminance_ends_onto_the_palette_ends():
+    """Pins the exact mapping, so the ramp and ImageOps.colorize stay equivalent."""
+    black = Image.new("RGB", (4, 4), (0, 0, 0))
+    white = Image.new("RGB", (4, 4), (255, 255, 255))
+    assert imagegen.duotone(black, "#102030", "#FFFFFF").getpixel((0, 0)) == (16, 32, 48)
+    assert imagegen.duotone(white, "#102030", "#FFFFFF").getpixel((0, 0)) == (255, 255, 255)
+
+
+def test_cover_crop_hits_the_target_exactly():
+    out = imagegen.cover_crop(Image.new("RGB", (1024, 1536), "white"), 800, 1200)
+    assert out.size == (800, 1200)
 
 
 def test_prompt_guards_do_not_dictate_a_house_style():
@@ -196,9 +208,7 @@ async def test_upscaling_is_disclosed_in_the_notes(tmp_path, stub_openai):
     assert any("dpi native" in n for n in result["notes"])
 
 
-# --------------------------------------------------------------------------- #
-# Director selection
-# --------------------------------------------------------------------------- #
+# --- Director selection ---
 
 
 async def test_openai_director_produces_the_same_brief_shape(monkeypatch):

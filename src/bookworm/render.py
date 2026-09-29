@@ -19,7 +19,6 @@ from . import _cairo
 from .formats import px
 from .layout import Ctx, build_front, build_spread
 
-#: Asset names callers can ask for.
 ASSETS = (
     "front_png",
     "front_jpg",
@@ -68,7 +67,6 @@ def _write_raster(png: bytes, path: Path, dpi: int, *, quality: int = 95) -> Non
 
 
 def render(ctx: Ctx, outdir: Path, assets: tuple[str, ...] = DEFAULT_ASSETS) -> RenderResult:
-    """Build the requested assets into ``outdir``."""
     unknown = [a for a in assets if a not in ASSETS]
     if unknown:
         raise ValueError(
@@ -136,13 +134,7 @@ def render(ctx: Ctx, outdir: Path, assets: tuple[str, ...] = DEFAULT_ASSETS) -> 
             json.dumps(
                 {
                     "art_direction": ctx.direction.model_dump(),
-                    "content": {
-                        "title": ctx.content.title,
-                        "author": ctx.content.author,
-                        "genre_line": ctx.content.genre_line,
-                        "blurb": ctx.content.blurb,
-                        "imprint": ctx.content.imprint,
-                    },
+                    "content": ctx.content.summary(),
                     "geometry": g.to_dict(),
                     "seed": ctx.seed,
                 },

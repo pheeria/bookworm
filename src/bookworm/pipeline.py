@@ -9,36 +9,26 @@
 
 from __future__ import annotations
 
-import hashlib
+import asyncio
 import logging
 from pathlib import Path
 
-from fastapi.concurrency import run_in_threadpool
-
 from . import imagegen
-from .artdirection import DEFAULT_STYLE, apply_overrides, direct, fallback_direction
+from .artdirection import (
+    DEFAULT_STYLE,
+    DRAWN_MOTIFS,
+    apply_overrides,
+    direct,
+    fallback_direction,
+    seed_from,
+)
 from .director_openai import direct_openai, direct_prompt_from_text
 from .formats import geometry, px, resolve_format
 from .layout import Content, Ctx, artwork_plan
-from .palettes import luminance
+from .palettes import darkest_and_lightest
 from .render import DEFAULT_ASSETS, render
 
 log = logging.getLogger("bookworm.pipeline")
-
-#: Motif used when generated artwork was asked for but could not be produced.
-_MOTIF_FALLBACK = ("arcs", "blocks", "dots", "split", "waveform", "rings")
-
-
-def _seed(*parts: str) -> int:
-    digest = hashlib.blake2b("\x1f".join(parts).encode("utf-8"), digest_size=8).digest()
-    return int.from_bytes(digest, "big")
-
-
-def _duotone_pair(hexes: tuple[str, ...]) -> tuple[str, str]:
-    """Darkest and lightest of the palette, so the artwork stays in register."""
-    ordered = sorted(hexes, key=luminance)
-    return ordered[0], ordered[-1]
-
 
 async def create_cover(
     *,
@@ -99,7 +89,7 @@ async def create_cover(
         direction = apply_overrides(direction, artwork="procedural")
 
     if seed is None:
-        seed = _seed(text, title, author, direction.template, direction.ground)
+        seed = seed_from(text, title, author, direction.template, direction.ground)
 
     notes: list[str] = []
     artwork_uri = None
@@ -118,7 +108,7 @@ async def create_cover(
             target_w_px=px(plan[2], dpi),
             target_h_px=px(plan[3], dpi),
             treatment=treatment,  # type: ignore[arg-type]
-            duotone_colours=_duotone_pair(hexes),
+            duotone_colours=darkest_and_lightest(hexes),
             style=style,
             quality=image_quality,
         )
@@ -128,8 +118,8 @@ async def create_cover(
                 "used a procedural motif instead"
             )
             if direction.motif == "none":
-                direction = apply_overrides(
-                    direction, motif=_MOTIF_FALLBACK[seed % len(_MOTIF_FALLBACK)]
+                direction = direction.model_copy(
+                    update={"motif": DRAWN_MOTIFS[seed % len(DRAWN_MOTIFS)]}
                 )
         else:
             artwork_uri = imagegen.to_data_uri(art.image)
@@ -169,20 +159,14 @@ async def create_cover(
         notes=notes,
     )
 
-    result = await run_in_threadpool(render, ctx, outdir, assets)
+    result = await asyncio.to_thread(render, ctx, outdir, assets)
 
     return {
         "art_direction": direction.model_dump(),
         "art_direction_meta": ad_meta,
         "artwork": art_meta,
         "geometry": geo.to_dict(),
-        "content": {
-            "title": content.title,
-            "author": content.author,
-            "genre_line": content.genre_line,
-            "blurb": content.blurb,
-            "imprint": content.imprint,
-        },
+        "content": content.summary(),
         "style": style,
         "director": director,
         "seed": seed,

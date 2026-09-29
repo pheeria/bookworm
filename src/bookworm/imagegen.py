@@ -18,7 +18,11 @@ import os
 from dataclasses import dataclass, field
 from typing import Literal
 
-from PIL import Image
+from PIL import Image, ImageOps
+
+from .artdirection import DEFAULT_STYLE
+from .formats import MM_PER_INCH
+from .palettes import rgb
 
 log = logging.getLogger("bookworm.imagegen")
 
@@ -69,10 +73,6 @@ class Artwork:
     meta: dict = field(default_factory=dict)
 
 
-class ImageGenerationError(RuntimeError):
-    pass
-
-
 def _best_size(aspect_w_over_h: float) -> str:
     return min(_SIZES, key=lambda s: abs(s[1] - aspect_w_over_h))[0]
 
@@ -80,12 +80,12 @@ def _best_size(aspect_w_over_h: float) -> str:
 def build_prompt(
     image_prompt: str,
     palette_hexes: tuple[str, ...],
-    style: str = "illustrated",
+    style: str = DEFAULT_STYLE,
 ) -> str:
     """Harden the art director's prompt before it reaches the image model."""
     colours = ", ".join(palette_hexes)
     palette_rule = _PALETTE_INSTRUCTION.get(
-        style, _PALETTE_INSTRUCTION["illustrated"]
+        style, _PALETTE_INSTRUCTION[DEFAULT_STYLE]
     ).format(colours=colours)
     return f"{image_prompt.strip()}\n\n{palette_rule} {_PROMPT_GUARDS}"
 
@@ -98,7 +98,7 @@ async def generate(
     target_h_px: int,
     treatment: Treatment = "none",
     duotone_colours: tuple[str, str] | None = None,
-    style: str = "illustrated",
+    style: str = DEFAULT_STYLE,
     model: str | None = None,
     quality: str | None = None,
     timeout: float = 180.0,
@@ -182,20 +182,7 @@ def cover_crop(img: Image.Image, target_w: int, target_h: int) -> Image.Image:
 
 def duotone(img: Image.Image, shadow_hex: str, highlight_hex: str) -> Image.Image:
     """Map luminance onto two palette colours, which holds the cover together."""
-    lo = _rgb(shadow_hex)
-    hi = _rgb(highlight_hex)
-    grey = img.convert("L")
-    ramp = []
-    for channel in range(3):
-        ramp += [
-            round(lo[channel] + (hi[channel] - lo[channel]) * i / 255) for i in range(256)
-        ]
-    return grey.convert("RGB").point(ramp)
-
-
-def _rgb(hex_colour: str) -> tuple[int, int, int]:
-    h = hex_colour.lstrip("#")
-    return tuple(int(h[i : i + 2], 16) for i in (0, 2, 4))  # type: ignore[return-value]
+    return ImageOps.colorize(img.convert("L"), rgb(shadow_hex), rgb(highlight_hex))
 
 
 def to_data_uri(img: Image.Image, *, quality: int = 92) -> str:
@@ -210,4 +197,4 @@ def effective_dpi(native_px: int, extent_mm: float) -> int:
     """True resolution of the artwork over the panel it covers."""
     if extent_mm <= 0:
         return 0
-    return round(native_px / (extent_mm / 25.4))
+    return round(native_px / (extent_mm / MM_PER_INCH))

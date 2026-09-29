@@ -19,9 +19,10 @@ import os
 from .artdirection import (
     DEFAULT_STYLE,
     ArtDirection,
-    _clip,
-    fallback_direction,
+    clip_prompt,
+    degrade,
     system_prompt,
+    user_prompt,
 )
 
 log = logging.getLogger("bookworm.director_openai")
@@ -45,28 +46,21 @@ async def direct_openai(
     """
     model = model or MODEL
     meta: dict = {"source": "openai", "model": model, "style": style}
-    prompt_text, clipped = _clip(text)
+    prompt_text, clipped = clip_prompt(text)
     meta["input_clipped"] = clipped
 
     if not os.environ.get("OPENAI_API_KEY"):
         log.info("OPENAI_API_KEY not set; using the deterministic brief")
-        meta.update(source="fallback", reason="no OPENAI_API_KEY")
-        return fallback_direction(text, title, author, style), meta
+        return degrade(meta, "no OPENAI_API_KEY", text, title, author, style)
 
     try:
         import openai
         from openai import AsyncOpenAI
     except ImportError:  # pragma: no cover
-        meta.update(source="fallback", reason="openai package not installed")
-        return fallback_direction(text, title, author, style), meta
+        return degrade(meta, "openai package not installed", text, title, author, style)
 
     client = AsyncOpenAI(timeout=timeout)
-    user = (
-        f"Titel: {title}\n"
-        f"Autor/in: {author}\n\n"
-        f"Vorgabe/Text:\n{prompt_text}\n\n"
-        "Brief den Umschlag."
-    )
+    user = user_prompt(title, author, prompt_text)
 
     try:
         response = await client.responses.parse(
@@ -87,8 +81,7 @@ async def direct_openai(
         return direction, meta
     except (openai.OpenAIError, ValueError, TypeError) as exc:
         log.warning("openai art direction failed (%s), using fallback", exc)
-        meta.update(source="fallback", reason=str(exc))
-        return fallback_direction(text, title, author, style), meta
+        return degrade(meta, str(exc), text, title, author, style)
 
 
 #: Prefix that carries the register into a locally-composed image prompt, used by

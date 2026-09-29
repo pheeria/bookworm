@@ -121,8 +121,6 @@ class MissingFontError(RuntimeError):
 
 
 class Face:
-    """A single shaped-and-outlined font face."""
-
     def __init__(self, path: str, index: int) -> None:
         self.path = path
         self.index = index
@@ -134,14 +132,8 @@ class Face:
         self._glyphset = self._tt.getGlyphSet()
         self._order = self._tt.getGlyphOrder()
         os2 = self._tt["OS/2"] if "OS/2" in self._tt else None
-        hhea = self._tt["hhea"]
-        self.ascender = hhea.ascent / self.upem
-        self.descender = abs(hhea.descent) / self.upem
         cap = getattr(os2, "sCapHeight", 0) or 0
         self.cap_height = (cap / self.upem) if cap else self._measured_cap_height()
-        xh = getattr(os2, "sxHeight", 0) or 0
-        self.x_height = (xh / self.upem) if xh else self.cap_height * 0.72
-        self._path_cache: dict[str, str] = {}
 
     def _measured_cap_height(self) -> float:
         try:
@@ -150,15 +142,6 @@ class Face:
             return (g.yMax or 0) / self.upem
         except Exception:
             return 0.7
-
-    def _glyph_path(self, name: str) -> str:
-        cached = self._path_cache.get(name)
-        if cached is None:
-            pen = SVGPathPen(self._glyphset)
-            self._glyphset[name].draw(pen)
-            cached = pen.getCommands()
-            self._path_cache[name] = cached
-        return cached
 
     def shape(self, text: str) -> list[tuple[str, float, float, float]]:
         """Shape ``text`` into ``(glyph_name, x_advance, x_offset, y_offset)`` in em units."""
@@ -195,28 +178,20 @@ class Face:
         fill: str = "#000000",
         x: float = 0.0,
         y: float = 0.0,
-    ) -> tuple[str, float]:
-        """Outline ``text`` as a single SVG path with its baseline on ``y``.
-
-        Returns the SVG fragment and the advance width in the same units as ``size``.
-        """
-        glyphs = self.shape(text)
+    ) -> str:
+        """Outline ``text`` as a single SVG path with its baseline on ``y``."""
         pen = SVGPathPen(self._glyphset)
         # Outlines come back in font units, so the scale carries the 1/upem.
         unit = size / self.upem
         cursor = 0.0
-        for name, adv, xo, yo in glyphs:
-            if self._glyph_path(name):
-                t = Transform().translate(
-                    x + (cursor + xo) * size, y - yo * size
-                ).scale(unit, -unit)
-                self._glyphset[name].draw(TransformPen(pen, t))
+        for name, adv, xo, yo in self.shape(text):
+            t = Transform().translate(
+                x + (cursor + xo) * size, y - yo * size
+            ).scale(unit, -unit)
+            self._glyphset[name].draw(TransformPen(pen, t))
             cursor += adv + tracking
-        width = max(0.0, cursor - tracking) * size
         d = pen.getCommands()
-        if not d:
-            return "", width
-        return f'<path d="{d}" fill="{fill}"/>', width
+        return f'<path d="{d}" fill="{fill}"/>' if d else ""
 
 
 @lru_cache(maxsize=64)
@@ -290,11 +265,11 @@ class TextBlock:
 
 def _partition(
     face_: Face, words: list[str], n_lines: int, tracking: float
-) -> tuple[float, float, list[str]]:
+) -> tuple[float, list[str]]:
     """Split ``words`` into ``n_lines`` minimising the widest line, then ragging.
 
-    Returns ``(max_width_em, sum_sq_slack, lines)``. Word order is preserved, so
-    this is a linear partition -- exhaustive DP is cheap at title lengths.
+    Word order is preserved, so this is a linear partition; exhaustive DP is
+    cheap at title lengths. Returns the widest line's width in em, and the lines.
     """
     n_words = len(words)
     n_lines = max(1, min(n_lines, n_words))
@@ -323,25 +298,23 @@ def _partition(
         assert best is not None
         return best
 
-    max_w, sum_sq, splits = go(0, n_lines)
+    max_w, _, splits = go(0, n_lines)
     lines, start = [], 0
     for end in splits:
         lines.append(" ".join(words[start:end]))
         start = end
-    return max_w, sum_sq, lines
+    return max_w, lines
 
 
 def fit_display(
     text: str,
     family: str,
     *,
-    weight: str = "display",
     max_width: float,
     max_height: float,
     max_lines: int = 4,
     leading: float = 0.88,
     tracking: float = -0.02,
-    max_size: float | None = None,
 ) -> TextBlock:
     """Set ``text`` as large as will fit the measure, choosing the line count.
 
@@ -352,12 +325,11 @@ def fit_display(
     words = [w for w in text.split() if w]
     if not words:
         return TextBlock([], 0.0, leading, tracking, [])
-    f = face(family, weight)
-    ceiling = max_size if max_size is not None else float("inf")
+    f = face(family, "display")
 
     best: TextBlock | None = None
     for n in range(1, min(max_lines, len(words)) + 1):
-        max_w_em, _, lines = _partition(f, words, n, tracking)
+        max_w_em, lines = _partition(f, words, n, tracking)
         if max_w_em <= 0:
             continue
         lead = umlaut_leading(lines, leading)
@@ -365,7 +337,7 @@ def fit_display(
         # cap line down to the last baseline
         h_em = (n - 1) * lead + f.cap_height
         by_height = max_height / h_em if h_em > 0 else float("inf")
-        size = min(by_width, by_height, ceiling)
+        size = min(by_width, by_height)
         if best is None or size > best.size + 1e-9:
             widths = [f.measure(ln, tracking) * size for ln in lines]
             best = TextBlock(lines, size, lead, tracking, widths)
@@ -380,11 +352,11 @@ def wrap_body(
     max_width: float,
     *,
     weight: str = "regular",
-    tracking: float = 0.0,
     max_lines: int | None = None,
 ) -> list[str]:
     """Greedy wrap for body copy at a fixed size, honouring existing paragraphs."""
     f = face(family, weight)
+    tracking = 0.0
     lines: list[str] = []
     for para in text.split("\n"):
         words = [w for w in para.split() if w]
@@ -416,19 +388,3 @@ def _ellipsise(f: Face, line: str, size: float, max_width: float, tracking: floa
         words.pop()
     return "…"
 
-
-def letterspaced(
-    text: str,
-    family: str,
-    size: float,
-    *,
-    weight: str = "regular",
-    tracking: float = 0.12,
-    fill: str = "#000000",
-    x: float = 0.0,
-    y: float = 0.0,
-) -> tuple[str, float]:
-    """A small tracked-out label, the way German covers set author lines and series marks."""
-    return face(family, weight).run(
-        text, size, tracking=tracking, fill=fill, x=x, y=y
-    )

@@ -48,19 +48,11 @@ class BookFormat:
     #: Überstand -- how far the case stands proud of the book block.
     overhang_mm: float = 0.0
 
-    @property
-    def aspect(self) -> float:
-        return self.trim_h_mm / self.trim_w_mm
 
-
-def _fmt(*args, **kwargs) -> tuple[str, BookFormat]:
-    f = BookFormat(*args, **kwargs)
-    return f.key, f
-
-
-FORMATS: dict[str, BookFormat] = dict(
-    [
-        _fmt(
+FORMATS: dict[str, BookFormat] = {
+    f.key: f
+    for f in (
+        BookFormat(
             "rororo_taschenbuch",
             "rororo Taschenbuch",
             "Rowohlt",
@@ -70,7 +62,7 @@ FORMATS: dict[str, BookFormat] = dict(
             grammage=80.0,
             paper_volume=1.3,
         ),
-        _fmt(
+        BookFormat(
             "rowohlt_paperback",
             "Paperback",
             "Rowohlt",
@@ -80,7 +72,7 @@ FORMATS: dict[str, BookFormat] = dict(
             grammage=90.0,
             paper_volume=1.2,
         ),
-        _fmt(
+        BookFormat(
             "rowohlt_hardcover",
             "Hardcover mit Schutzumschlag",
             "Rowohlt",
@@ -93,7 +85,7 @@ FORMATS: dict[str, BookFormat] = dict(
             board_mm=2.5,
             overhang_mm=3.0,
         ),
-        _fmt(
+        BookFormat(
             "kiwi_paperback",
             "KiWi-Paperback",
             "Kiepenheuer & Witsch",
@@ -103,7 +95,7 @@ FORMATS: dict[str, BookFormat] = dict(
             grammage=90.0,
             paper_volume=1.2,
         ),
-        _fmt(
+        BookFormat(
             "kiwi_taschenbuch",
             "KiWi-Taschenbuch",
             "Kiepenheuer & Witsch",
@@ -113,7 +105,7 @@ FORMATS: dict[str, BookFormat] = dict(
             grammage=80.0,
             paper_volume=1.3,
         ),
-        _fmt(
+        BookFormat(
             "kiwi_klappenbroschur",
             "Klappenbroschur",
             "Kiepenheuer & Witsch",
@@ -124,7 +116,7 @@ FORMATS: dict[str, BookFormat] = dict(
             grammage=90.0,
             paper_volume=1.2,
         ),
-        _fmt(
+        BookFormat(
             "kiwi_hardcover",
             "Hardcover Leinen mit Schutzumschlag",
             "Kiepenheuer & Witsch",
@@ -137,7 +129,7 @@ FORMATS: dict[str, BookFormat] = dict(
             board_mm=2.5,
             overhang_mm=3.0,
         ),
-        _fmt(
+        BookFormat(
             "suhrkamp_taschenbuch",
             "suhrkamp taschenbuch",
             "Suhrkamp",
@@ -147,7 +139,7 @@ FORMATS: dict[str, BookFormat] = dict(
             grammage=80.0,
             paper_volume=1.3,
         ),
-        _fmt(
+        BookFormat(
             "din_a5_hardcover",
             "Hardcover DIN A5",
             "allgemein",
@@ -160,7 +152,7 @@ FORMATS: dict[str, BookFormat] = dict(
             board_mm=2.5,
             overhang_mm=3.0,
         ),
-        _fmt(
+        BookFormat(
             "grossformat_hardcover",
             "Großformatiges Hardcover",
             "allgemein",
@@ -173,14 +165,13 @@ FORMATS: dict[str, BookFormat] = dict(
             board_mm=3.0,
             overhang_mm=3.0,
         ),
-    ]
-)
+    )
+}
 
 DEFAULT_FORMAT = "kiwi_paperback"
 
 
 def px(mm: float, dpi: int) -> int:
-    """Millimetres to whole pixels at ``dpi``."""
     return max(1, round(mm / MM_PER_INCH * dpi))
 
 
@@ -233,12 +224,6 @@ class Geometry:
     sheet_w_mm: float
     sheet_h_mm: float
     panels: tuple[Panel, ...] = field(default_factory=tuple)
-
-    def panel(self, name: str) -> Panel:
-        for p in self.panels:
-            if p.name == name:
-                return p
-        raise KeyError(name)
 
     @property
     def front_bleed_w_mm(self) -> float:

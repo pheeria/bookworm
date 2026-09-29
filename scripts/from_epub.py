@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import html
 import re
 import sys
 import zipfile
@@ -31,16 +32,9 @@ def _opf_path(zf: zipfile.ZipFile) -> str:
     return rootfile.get("full-path")  # type: ignore[return-value]
 
 
-def _strip_markup(html: str) -> str:
-    html = re.sub(r"(?is)<(script|style|head).*?</\1>", " ", html)
-    text = re.sub(r"(?s)<[^>]+>", " ", html)
-    for entity, char in (
-        ("&nbsp;", " "), ("&amp;", "&"), ("&lt;", "<"), ("&gt;", ">"),
-        ("&quot;", '"'), ("&#39;", "'"), ("&auml;", "ä"), ("&ouml;", "ö"),
-        ("&uuml;", "ü"), ("&szlig;", "ß"), ("&Auml;", "Ä"), ("&Ouml;", "Ö"),
-        ("&Uuml;", "Ü"), ("&mdash;", "—"), ("&ndash;", "–"),
-    ):
-        text = text.replace(entity, char)
+def _strip_markup(markup: str) -> str:
+    markup = re.sub(r"(?is)<(script|style|head).*?</\1>", " ", markup)
+    text = html.unescape(re.sub(r"(?s)<[^>]+>", " ", markup))
     return re.sub(r"\s+", " ", text).strip()
 
 
@@ -104,7 +98,7 @@ async def run_local(book: dict, outdir: Path, **overrides) -> dict:
         pages=book["pages"],
         outdir=outdir,
         assets=("front_png", "front_svg", "spread_pdf", "direction_json"),
-        **{k: v for k, v in overrides.items() if v is not None},
+        **overrides,
     )
 
 
@@ -116,7 +110,7 @@ def run_http(book: dict, base_url: str, **overrides) -> dict:
         "title": book["title"],
         "author": book["author"],
         "pages": book["pages"],
-        **{k: v for k, v in overrides.items() if v is not None},
+        **overrides,
     }
     response = httpx.post(f"{base_url}/generate", json=payload, timeout=300)
     response.raise_for_status()
@@ -136,9 +130,13 @@ def main() -> int:
     args = ap.parse_args()
 
     overrides = {
-        "template": args.template,
-        "palette": args.palette,
-        "artwork": args.artwork,
+        k: v
+        for k, v in (
+            ("template", args.template),
+            ("palette", args.palette),
+            ("artwork", args.artwork),
+        )
+        if v is not None
     }
 
     for epub in args.epubs:
@@ -148,12 +146,7 @@ def main() -> int:
         print(f"  {book['chars']:,} characters → {book['pages']} pages")
         if args.local:
             result = asyncio.run(
-                run_local(
-                    book,
-                    args.outdir / epub.stem,
-                    format_key=args.format_key,
-                    **overrides,
-                )
+                run_local(book, args.outdir / epub.stem, format_key=args.format_key, **overrides)
             )
             for name, path in result["files"].items():
                 print(f"  {name}: {path}")

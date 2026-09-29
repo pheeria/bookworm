@@ -15,7 +15,7 @@ import hashlib
 import logging
 import os
 import re
-from typing import Literal
+from typing import Literal, get_args
 
 import anthropic
 from pydantic import BaseModel, Field
@@ -35,14 +35,7 @@ Template = Literal[
     "photo_duotone",
     "illustrated_full",
 ]
-TEMPLATES: tuple[str, ...] = (
-    "rororo_band",
-    "kiwi_flat",
-    "type_block",
-    "didone_centre",
-    "photo_duotone",
-    "illustrated_full",
-)
+TEMPLATES: tuple[str, ...] = get_args(Template)
 
 TypeFamily = Literal[
     "geometric",
@@ -56,21 +49,15 @@ TypeFamily = Literal[
 ]
 
 Motif = Literal["arcs", "blocks", "dots", "split", "waveform", "rings", "none"]
-MOTIFS: tuple[str, ...] = ("arcs", "blocks", "dots", "split", "waveform", "rings", "none")
+MOTIFS: tuple[str, ...] = get_args(Motif)
+#: Every motif that actually draws something.
+DRAWN_MOTIFS: tuple[str, ...] = tuple(m for m in MOTIFS if m != "none")
 
 Artwork = Literal["generated", "procedural", "none"]
 
-# The Literal above has to be static for Pydantic; keep it honest.
-assert set(FAMILIES) == {
-    "geometric",
-    "grotesk",
-    "grotesk_condensed",
-    "neoclassical",
-    "didone",
-    "literary_serif",
-    "humanist",
-    "slab",
-}
+# The Literal has to be spelled out for Pydantic; keep it honest against the
+# faces typography actually offers.
+assert set(FAMILIES) == set(get_args(TypeFamily))
 
 #: The face each layout is designed around, used when a caller pins the template
 #: but not the typeface.
@@ -242,7 +229,7 @@ few planes. Never a literal illustration of the plot.
 """,
 }
 
-STYLES: tuple[str, ...] = ("illustrated", "painterly", "typographic")
+STYLES: tuple[str, ...] = tuple(STYLE_GUIDANCE)
 DEFAULT_STYLE = "illustrated"
 
 
@@ -251,7 +238,7 @@ def system_prompt(style: str = DEFAULT_STYLE) -> str:
     return f"{_SYSTEM_BASE}\n{guidance}"
 
 
-def _clip(text: str) -> tuple[str, bool]:
+def clip_prompt(text: str) -> tuple[str, bool]:
     """Bound the prompt, keeping the opening and the ending if it is long."""
     if len(text) <= MAX_PROMPT_CHARS:
         return text, False
@@ -260,7 +247,25 @@ def _clip(text: str) -> tuple[str, bool]:
     return f"{head}\n\n[…]\n\n{tail}", True
 
 
-def _seed(*parts: str) -> int:
+def user_prompt(title: str, author: str, text: str) -> str:
+    """The message both directors send, so their briefs stay comparable."""
+    return (
+        f"Titel: {title}\n"
+        f"Autor/in: {author}\n\n"
+        f"Vorgabe/Text:\n{text}\n\n"
+        "Brief den Umschlag."
+    )
+
+
+def degrade(
+    meta: dict, reason: str, text: str, title: str, author: str, style: str
+) -> tuple[ArtDirection, dict]:
+    """Fall back to the deterministic brief, recording why."""
+    meta.update(source="fallback", reason=reason)
+    return fallback_direction(text, title, author, style), meta
+
+
+def seed_from(*parts: str) -> int:
     digest = hashlib.blake2b("\x1f".join(parts).encode("utf-8"), digest_size=8).digest()
     return int.from_bytes(digest, "big")
 
@@ -316,7 +321,7 @@ def fallback_direction(
     text: str, title: str, author: str, style: str = DEFAULT_STYLE
 ) -> ArtDirection:
     """Deterministic brief, used when the model is unavailable."""
-    seed = _seed(text, title, author, style)
+    seed = seed_from(text, title, author, style)
     lowered = f"{title} {text}".lower()
 
     genre = _genre_from_text(lowered)
@@ -327,7 +332,7 @@ def fallback_direction(
     candidates = STYLE_TEMPLATES.get(style, TEMPLATES)
     template = candidates[(seed >> 8) % len(candidates)]
     family = TEMPLATE_DEFAULT_FAMILY[template]
-    motif = MOTIFS[(seed >> 16) % (len(MOTIFS) - 1)]
+    motif = DRAWN_MOTIFS[(seed >> 16) % len(DRAWN_MOTIFS)]
 
     sentences = [s.strip() for s in text.replace("\n", " ").split(".") if s.strip()]
     blurb = ". ".join(sentences[:3])
@@ -366,22 +371,16 @@ async def direct(
 ) -> tuple[ArtDirection, dict]:
     """Produce a cover brief. Returns the brief and metadata about how it was made."""
     meta: dict = {"source": "claude", "model": MODEL, "style": style}
-    prompt_text, clipped = _clip(text)
+    prompt_text, clipped = clip_prompt(text)
     meta["input_clipped"] = clipped
 
     try:
         ac = client or anthropic.AsyncAnthropic()
     except Exception as exc:  # no credentials resolvable
         log.info("art direction falling back: %s", exc)
-        meta.update(source="fallback", reason=str(exc))
-        return fallback_direction(text, title, author, style), meta
+        return degrade(meta, str(exc), text, title, author, style)
 
-    user = (
-        f"Titel: {title}\n"
-        f"Autor/in: {author}\n\n"
-        f"Vorgabe/Text:\n{prompt_text}\n\n"
-        "Brief den Umschlag."
-    )
+    user = user_prompt(title, author, prompt_text)
 
     try:
         response = await ac.messages.parse(
@@ -395,8 +394,7 @@ async def direct(
         if response.stop_reason == "refusal":
             detail = getattr(response.stop_details, "category", None)
             log.warning("art direction refused (%s), using fallback", detail)
-            meta.update(source="fallback", reason=f"refusal:{detail}")
-            return fallback_direction(text, title, author, style), meta
+            return degrade(meta, f"refusal:{detail}", text, title, author, style)
         direction = response.parsed_output
         if direction is None:
             raise ValueError("model returned no parsed output")
@@ -407,8 +405,7 @@ async def direct(
         return direction, meta
     except (anthropic.APIError, ValueError, TypeError) as exc:
         log.warning("art direction failed (%s), using fallback", exc)
-        meta.update(source="fallback", reason=str(exc))
-        return fallback_direction(text, title, author, style), meta
+        return degrade(meta, str(exc), text, title, author, style)
 
 
 def apply_overrides(

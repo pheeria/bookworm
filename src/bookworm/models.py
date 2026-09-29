@@ -6,8 +6,9 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .artdirection import MOTIFS, STYLES, TEMPLATES
+from .artdirection import MOTIFS, STYLES, TEMPLATES, Artwork
 from .formats import DEFAULT_FORMAT, FORMATS
+from .imagegen import Quality, Treatment
 from .palettes import PALETTE_KEYS
 from .render import ASSETS
 from .typography import TYPE_FAMILIES
@@ -47,7 +48,7 @@ class CoverRequest(BaseModel):
     template: Literal[TEMPLATES] | None = None  # type: ignore[valid-type]
     type_family: Literal[TYPE_FAMILIES] | None = None  # type: ignore[valid-type]
     palette: Literal[PALETTE_KEYS] | None = None  # type: ignore[valid-type]
-    artwork: Literal["generated", "procedural", "none"] | None = None
+    artwork: Artwork | None = None
     motif: Literal[MOTIFS] | None = None  # type: ignore[valid-type]
     genre_line: str | None = Field(
         default=None, description='Gattungsbezeichnung, e.g. "Roman".'
@@ -73,7 +74,7 @@ class CoverRequest(BaseModel):
             "see image_quality."
         ),
     )
-    image_quality: Literal["low", "medium", "high", "auto"] | None = Field(
+    image_quality: Quality | None = Field(
         default=None,
         description=(
             "Image-model quality. This is the real latency and cost lever: 'high' "
@@ -81,7 +82,7 @@ class CoverRequest(BaseModel):
             "BOOKWORM_IMAGE_QUALITY, else 'high'."
         ),
     )
-    treatment: Literal["none", "duotone", "grayscale"] = Field(
+    treatment: Treatment = Field(
         default="none",
         description=(
             "Post-process applied to generated artwork. 'duotone' maps it onto two "

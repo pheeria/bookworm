@@ -10,10 +10,8 @@ import random
 from collections.abc import Callable
 
 from .palettes import Palette
-
-
-def _n(v: float) -> str:
-    return f"{v:.3f}"
+from .svg import n as _n
+from .svg import rect as _rect
 
 
 def arcs(x: float, y: float, w: float, h: float, p: Palette, rng: random.Random) -> str:
@@ -41,10 +39,7 @@ def blocks(x: float, y: float, w: float, h: float, p: Palette, rng: random.Rando
     out = []
     for i, (c, r) in enumerate(cells[: rng.randint(3, 6)]):
         fill = p.accent if i % 2 else p.secondary
-        out.append(
-            f'<rect x="{_n(x + c * cw)}" y="{_n(y + r * ch)}" '
-            f'width="{_n(cw)}" height="{_n(ch)}" fill="{fill}"/>'
-        )
+        out.append(_rect(x + c * cw, y + r * ch, cw, ch, fill))
     return "".join(out)
 
 
@@ -92,9 +87,10 @@ def waveform(x: float, y: float, w: float, h: float, p: Palette, rng: random.Ran
         amp = (0.25 + 0.75 * abs(rng.gauss(0.5, 0.28))) * (0.4 + 0.6 * (1 - abs(t - 0.5) * 2))
         bh = max(h * 0.04, min(h, h * amp))
         out.append(
-            f'<rect x="{_n(x + i * gap + (gap - bar) / 2)}" y="{_n(y + h - bh)}" '
-            f'width="{_n(bar)}" height="{_n(bh)}" '
-            f'fill="{p.accent if i % 4 else p.secondary}"/>'
+            _rect(
+                x + i * gap + (gap - bar) / 2, y + h - bh, bar, bh,
+                p.accent if i % 4 else p.secondary,
+            )
         )
     return "".join(out)
 
@@ -134,27 +130,19 @@ MOTIFS: dict[str, Callable[..., str]] = {
 }
 
 
+CLIP_ID = "clip-front-art"
+
+
 def draw(
-    name: str,
-    x: float,
-    y: float,
-    w: float,
-    h: float,
-    palette: Palette,
-    seed: int,
-    *,
-    clip_id: str | None = None,
+    name: str, x: float, y: float, w: float, h: float, palette: Palette, seed: int
 ) -> str:
-    """Draw ``name`` into the box, optionally clipped to it."""
-    fn = MOTIFS.get(name, none_)
-    body = fn(x, y, w, h, palette, random.Random(seed))
+    """Draw ``name`` clipped to the box."""
+    body = MOTIFS.get(name, none_)(x, y, w, h, palette, random.Random(seed))
     if not body:
         return ""
-    if clip_id:
-        return (
-            f'<clipPath id="{clip_id}">'
-            f'<rect x="{_n(x)}" y="{_n(y)}" width="{_n(w)}" height="{_n(h)}"/>'
-            f"</clipPath>"
-            f'<g clip-path="url(#{clip_id})">{body}</g>'
-        )
-    return body
+    return (
+        f'<clipPath id="{CLIP_ID}">'
+        f'<rect x="{_n(x)}" y="{_n(y)}" width="{_n(w)}" height="{_n(h)}"/>'
+        f"</clipPath>"
+        f'<g clip-path="url(#{CLIP_ID})">{body}</g>'
+    )
