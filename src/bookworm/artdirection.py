@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import re
 from typing import Literal
 
 import anthropic
@@ -276,6 +277,20 @@ _GENRE_HINTS = (
 )
 
 
+def _genre_from_text(lowered: str) -> str:
+    """Guess the Gattungsbezeichnung, used only when no model wrote the brief.
+
+    Matched as a whole word plus a short inflectional tail, not as a substring.
+    Substring matching reads "verschiedene" as the poetry term "vers" and prints
+    "Gedichte" on a novel -- German is too compound-happy for `in`.
+    """
+    for needles, label in _GENRE_HINTS:
+        for needle in needles:
+            if re.search(rf"\b{re.escape(needle)}\w{{0,3}}\b", lowered):
+                return label
+    return "Roman"
+
+
 #: Fallback image prompts per register. Deliberately concrete -- a vague prompt is
 #: what produces the generic abstract wash.
 _FALLBACK_IMAGE_PROMPT = {
@@ -304,11 +319,7 @@ def fallback_direction(
     seed = _seed(text, title, author, style)
     lowered = f"{title} {text}".lower()
 
-    genre = "Roman"
-    for needles, label in _GENRE_HINTS:
-        if any(n in lowered for n in needles):
-            genre = label
-            break
+    genre = _genre_from_text(lowered)
 
     # Warm palettes for the illustrated register, the full set otherwise.
     tone = ("charmant", "warm", "heiter") if style == "illustrated" else ()

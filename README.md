@@ -180,9 +180,48 @@ direction model may also return its own hex values.
 `spine_direction` defaults to `top_to_bottom`, which is what most contemporary
 German trade books do; `bottom_to_top` gives the older continental convention.
 
+## Speed, and where it actually goes
+
+Measured on one cover (`kiwi_klappenbroschur`, 304 pp, `illustrated`, same text):
+
+| Configuration | Wall clock |
+|---|---|
+| `director="claude"`, `image_quality="high"` | 130 s |
+| `director="openai"`, `image_quality="high"` | 149 s |
+| `director="none"`, `image_quality="high"` | 117 s |
+| `director="none"`, `image_quality="medium"` | **45 s** |
+| `director="none"`, `image_quality="low"` | **21 s** |
+
+The brief is ~13–16 s of that, whichever provider writes it (Claude 15.8 s,
+`gpt-5.4` 13.2 s, measured in isolation). So switching providers buys nothing on
+latency, and dropping the brief entirely buys 10%. **`image_quality` is the lever**:
+high → low is 5.5× faster. The `openai + high` row came in slower than
+`claude + high` purely from run-to-run image-generation variance, which is larger
+than the whole brief step — don't read a provider difference into it.
+
+`low` quality still produces a usable illustrated cover. Judge it on your own books
+before committing: it is the one setting here that trades output quality for time.
+
+## Directors
+
+`director` chooses who writes the brief. All three produce the same
+`ArtDirection` shape, so the renderer cannot tell them apart.
+
+| `director` | Behaviour |
+|---|---|
+| `claude` *(default)* | `claude-opus-5`. Set `BOOKWORM_CLAUDE_MODEL` to change. |
+| `openai` | `gpt-5.4` via `responses.parse`. Set `BOOKWORM_OPENAI_TEXT_MODEL`. One provider, one key, one bill. |
+| `none` | No text model at all. The image prompt is composed locally from your text behind a register preamble; palette, layout, genre line and back-cover copy come from the deterministic brief. |
+
+`director="none"` gives up real things: the palette is picked by hash rather than
+chosen for the book, the back-cover copy is cut from your input rather than written,
+and the Gattungsbezeichnung is a keyword guess. Worth it for drafts and bulk runs,
+not for a cover going to press.
+
 ## Models
 
-Set via env: `BOOKWORM_CLAUDE_MODEL` (default `claude-opus-5`) and
+Set via env: `BOOKWORM_CLAUDE_MODEL` (default `claude-opus-5`),
+`BOOKWORM_OPENAI_TEXT_MODEL` (default `gpt-5.4`) and
 `BOOKWORM_IMAGE_MODEL` (default `gpt-image-2`; the installed SDK also accepts
 `gpt-image-2.5-sunburst`, `gpt-image-2.5-flare`, `gpt-image-1.5`, `gpt-image-1`).
 Artwork is generated once, for the front panel, and cover-cropped to the planned

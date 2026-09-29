@@ -25,6 +25,8 @@ log = logging.getLogger("bookworm.imagegen")
 MODEL = os.environ.get("BOOKWORM_IMAGE_MODEL", "gpt-image-2")
 QUALITY = os.environ.get("BOOKWORM_IMAGE_QUALITY", "high")
 
+Quality = Literal["low", "medium", "high", "auto"]
+
 #: Sizes gpt-image models accept, with their aspect ratios (w/h).
 _SIZES: tuple[tuple[str, float], ...] = (
     ("1024x1536", 1024 / 1536),
@@ -98,6 +100,7 @@ async def generate(
     duotone_colours: tuple[str, str] | None = None,
     style: str = "illustrated",
     model: str | None = None,
+    quality: str | None = None,
     timeout: float = 180.0,
 ) -> Artwork | None:
     """Paint the front-cover artwork, or return ``None`` if OpenAI is unavailable.
@@ -118,6 +121,7 @@ async def generate(
     import openai
 
     model = model or MODEL
+    quality = quality or QUALITY
     size = _best_size(target_w_px / target_h_px)
     prompt = build_prompt(image_prompt, palette_hexes, style)
 
@@ -127,7 +131,7 @@ async def generate(
             model=model,
             prompt=prompt,
             size=size,
-            quality=QUALITY,
+            quality=quality,
             output_format="png",
             n=1,
         )
@@ -155,7 +159,7 @@ async def generate(
         meta={
             "provider": "openai",
             "model": model,
-            "quality": QUALITY,
+            "quality": quality,
             "requested_size": size,
             "native_px": [native_w, native_h],
             "treatment": treatment,

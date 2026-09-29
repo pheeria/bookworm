@@ -436,3 +436,72 @@ def test_catalogue_lists_the_style_registers():
     body = client.get("/catalogue").json()
     assert body["styles"] == ["illustrated", "painterly", "typographic"]
     assert "illustrated_full" in body["templates"]
+
+
+def test_genre_guess_is_not_fooled_by_german_compounds():
+    """Substring matching read "verschiedene" as the poetry term "vers".
+
+    That printed "Gedichte" on a novel. Only the no-model path uses this guess,
+    which is the path chosen for speed -- so it has to be right.
+    """
+    from bookworm.artdirection import _genre_from_text
+
+    assert _genre_from_text(
+        "sie erinnern sich an völlig verschiedene kindheiten"
+    ) == "Roman"
+    # Other compounds that start with a hint term.
+    assert _genre_from_text("ein versprechen an die berichtigung") == "Roman"
+    # Real signals still land, including inflected forms.
+    assert _genre_from_text("gesammelte gedichte") == "Gedichte"
+    assert _genre_from_text("ein band mit versen") == "Gedichte"
+    assert _genre_from_text("drei erzählungen") == "Erzählungen"
+    assert _genre_from_text("essays über sprache") == "Essays"
+    assert _genre_from_text("eine novelle") == "Novelle"
+    assert _genre_from_text("die märchen der brüder grimm") == "Märchen"
+
+
+def test_genre_guess_defaults_to_roman():
+    from bookworm.artdirection import _genre_from_text
+
+    assert _genre_from_text("zwei schwestern erben ein haus am hafen") == "Roman"
+
+
+# --------------------------------------------------------------------------- #
+# CORS
+# --------------------------------------------------------------------------- #
+
+
+def _preflight(origin: str):
+    return client.options(
+        "/generate",
+        headers={
+            "Origin": origin,
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type",
+        },
+    )
+
+
+@pytest.mark.parametrize(
+    "origin",
+    ["http://localhost:5173", "http://127.0.0.1:8080", "http://localhost"],
+)
+def test_browser_front_end_on_localhost_is_allowed(origin):
+    response = _preflight(origin)
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == origin
+
+
+@pytest.mark.parametrize(
+    "origin",
+    ["https://evil.example.com", "http://localhost.evil.com", "https://localhost:5173"],
+)
+def test_other_origins_are_refused(origin):
+    """POST /generate spends money on image generation.
+
+    A wildcard would let any page the user visits bill their OpenAI account, so
+    the default has to stay narrow. Note https://localhost is refused too: the
+    default regex is http-only, which is what a dev front end uses.
+    """
+    response = _preflight(origin)
+    assert response.headers.get("access-control-allow-origin") is None

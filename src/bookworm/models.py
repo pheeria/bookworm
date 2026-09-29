@@ -62,6 +62,25 @@ class CoverRequest(BaseModel):
             "abstract or absent."
         ),
     )
+    director: Literal["claude", "openai", "none"] = Field(
+        default="claude",
+        description=(
+            "Who writes the brief. 'claude' and 'openai' both produce the same "
+            "structured brief; 'none' skips the text model entirely and composes "
+            "the image prompt locally from your text, giving up the palette, genre "
+            "line and back-cover copy the brief would have decided. The brief is "
+            "~9s of a ~144s cover, so this is a provider choice, not a speed one -- "
+            "see image_quality."
+        ),
+    )
+    image_quality: Literal["low", "medium", "high", "auto"] | None = Field(
+        default=None,
+        description=(
+            "Image-model quality. This is the real latency and cost lever: 'high' "
+            "(the default) is most of the request's wall clock. Defaults to "
+            "BOOKWORM_IMAGE_QUALITY, else 'high'."
+        ),
+    )
     treatment: Literal["none", "duotone", "grayscale"] = Field(
         default="none",
         description=(

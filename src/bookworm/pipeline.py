@@ -16,7 +16,8 @@ from pathlib import Path
 from fastapi.concurrency import run_in_threadpool
 
 from . import imagegen
-from .artdirection import DEFAULT_STYLE, apply_overrides, direct
+from .artdirection import DEFAULT_STYLE, apply_overrides, direct, fallback_direction
+from .director_openai import direct_openai, direct_prompt_from_text
 from .formats import geometry, px, resolve_format
 from .layout import Content, Ctx, artwork_plan
 from .palettes import luminance
@@ -60,7 +61,9 @@ async def create_cover(
     genre_line: str | None = None,
     blurb: str | None = None,
     style: str = DEFAULT_STYLE,
+    director: str = "claude",
     treatment: str = "none",
+    image_quality: str | None = None,
     seed: int | None = None,
     marks: bool = False,
     spine_direction: str = "top_to_bottom",
@@ -69,7 +72,18 @@ async def create_cover(
     fmt = resolve_format(format_key)
     geo = geometry(fmt, pages=pages, dpi=dpi)
 
-    direction, ad_meta = await direct(text, title, author, style=style)
+    if director == "openai":
+        direction, ad_meta = await direct_openai(text, title, author, style=style)
+    elif director == "none":
+        # No text model at all: the deterministic brief decides everything except
+        # the picture, whose prompt is composed locally from the book's own words.
+        direction = fallback_direction(text, title, author, style)
+        direction = direction.model_copy(
+            update={"image_prompt": direct_prompt_from_text(text, style)}
+        )
+        ad_meta = {"source": "none", "model": None, "style": style}
+    else:
+        direction, ad_meta = await direct(text, title, author, style=style)
     direction = apply_overrides(
         direction,
         template=template,
@@ -106,6 +120,7 @@ async def create_cover(
             treatment=treatment,  # type: ignore[arg-type]
             duotone_colours=_duotone_pair(hexes),
             style=style,
+            quality=image_quality,
         )
         if art is None:
             notes.append(
@@ -169,6 +184,7 @@ async def create_cover(
             "imprint": content.imprint,
         },
         "style": style,
+        "director": director,
         "seed": seed,
         "files": {k: str(v) for k, v in result.files.items()},
         "notes": result.notes,

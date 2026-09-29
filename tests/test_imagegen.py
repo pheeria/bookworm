@@ -194,3 +194,93 @@ async def test_upscaling_is_disclosed_in_the_notes(tmp_path, stub_openai):
     )
     # 1536 px cannot be 300 dpi across a 155 mm panel, and the note says so.
     assert any("dpi native" in n for n in result["notes"])
+
+
+# --------------------------------------------------------------------------- #
+# Director selection
+# --------------------------------------------------------------------------- #
+
+
+async def test_openai_director_produces_the_same_brief_shape(monkeypatch):
+    """Either director yields an ArtDirection the renderer cannot distinguish."""
+    from bookworm.artdirection import ArtDirection, fallback_direction
+    from bookworm.director_openai import direct_openai
+
+    captured: dict = {}
+    reference = fallback_direction("Ein Haus am Hafen.", "Das Haus", "J. W.", "illustrated")
+
+    class _Parsed:
+        output_parsed = reference
+        usage = type("U", (), {"input_tokens": 1200, "output_tokens": 400})()
+
+    class _Responses:
+        async def parse(self, **kw):
+            captured.update(kw)
+            return _Parsed()
+
+    class _Client:
+        responses = _Responses()
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr("openai.AsyncOpenAI", lambda **_kw: _Client())
+
+    direction, meta = await direct_openai(
+        "Ein Haus am Hafen.", "Das Haus", "J. W.", style="illustrated"
+    )
+    assert isinstance(direction, ArtDirection)
+    assert meta["source"] == "openai"
+    assert meta["usage"]["input_tokens"] == 1200
+    # Same style guidance as the Claude director, same structured output target.
+    assert captured["text_format"] is ArtDirection
+    assert "ILLUSTRATED AND CHARMING" in captured["instructions"]
+
+
+async def test_openai_director_degrades_without_a_key(monkeypatch):
+    from bookworm.director_openai import direct_openai
+
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    direction, meta = await direct_openai("x", "y", "z")
+    assert meta["source"] == "fallback"
+    assert direction.artwork in ("generated", "none")
+
+
+@pytest.mark.parametrize("style", ["illustrated", "painterly", "typographic"])
+def test_direct_path_builds_a_prompt_from_the_book_text(style):
+    """director='none' runs no text model, so the prompt is composed locally."""
+    from bookworm.director_openai import (
+        _DIRECT_PREAMBLE,
+        DIRECT_TEXT_CHARS,
+        direct_prompt_from_text,
+    )
+
+    text = "Zwei Schwestern erben das Haus ihrer Großmutter am Hafen. " * 40
+    prompt = direct_prompt_from_text(text, style)
+    assert "Zwei Schwestern" in prompt
+    assert len(prompt) < len(text)
+    assert "\n" not in prompt  # whitespace normalised for the image model
+    # The book text is bounded; only the register preamble is added to it.
+    assert len(prompt) <= len(_DIRECT_PREAMBLE[style]) + DIRECT_TEXT_CHARS + 1
+
+
+async def test_none_director_makes_no_text_model_call(tmp_path, stub_openai):
+    result = await create_cover(
+        text="Zwei Schwestern erben das Haus ihrer Großmutter am Hafen.",
+        title="Das Haus am Hafen", author="Jonas Wiechert",
+        outdir=tmp_path, director="none", style="illustrated",
+        assets=("front_svg",),
+    )
+    assert result["art_direction_meta"]["source"] == "none"
+    assert result["director"] == "none"
+    # The book's own words reached the image model.
+    assert "Zwei Schwestern" in result["art_direction"]["image_prompt"]
+    assert "Zwei Schwestern" in stub_openai["prompt"]
+
+
+async def test_image_quality_is_forwarded_and_reported(tmp_path, stub_openai):
+    result = await create_cover(
+        text="Ein Haus am Hafen.", title="Das Haus", author="J. W.",
+        outdir=tmp_path, director="none", image_quality="low",
+        artwork="generated", template="illustrated_full", assets=("front_svg",),
+    )
+    assert stub_openai["quality"] == "low"
+    assert result["artwork"]["quality"] == "low"

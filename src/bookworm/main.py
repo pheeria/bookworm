@@ -15,6 +15,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query, Response
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
 from .artdirection import MOTIFS, STYLES, TEMPLATES
@@ -53,6 +54,31 @@ app = FastAPI(
         "set as outlined vectors in real German trade geometry -- trim, bleed, spine "
         "and flaps included."
     ),
+)
+
+
+#: Browser origins allowed to call the API.
+#:
+#: The default is any localhost port, which covers a dev front end without
+#: opening the service to the web at large. That matters more here than for a
+#: read-only API: `POST /generate` spends real money on image generation, so a
+#: wildcard would let any page you happen to visit bill your OpenAI account.
+#: Set BOOKWORM_CORS_ORIGINS to a comma-separated list, or "*" to allow all.
+_CORS_ORIGINS = os.environ.get("BOOKWORM_CORS_ORIGINS", "").strip()
+_LOCALHOST = r"http://(localhost|127\.0\.0\.1)(:\d+)?"
+
+if _CORS_ORIGINS == "*":
+    _cors = {"allow_origins": ["*"]}
+elif _CORS_ORIGINS:
+    _cors = {"allow_origins": [o.strip() for o in _CORS_ORIGINS.split(",") if o.strip()]}
+else:
+    _cors = {"allow_origin_regex": _LOCALHOST}
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type"],
+    **_cors,
 )
 
 
@@ -143,7 +169,9 @@ async def generate(
             genre_line=request.genre_line,
             blurb=request.blurb,
             style=request.style,
+            director=request.director,
             treatment=request.treatment,
+            image_quality=request.image_quality,
             seed=request.seed,
             marks=request.marks,
             spine_direction=request.spine_direction,
