@@ -1,0 +1,187 @@
+"""Cover artwork via OpenAI's image models.
+
+The image model paints the artwork only. All lettering is set afterwards as vector
+type by :mod:`bookworm.layout`, because generated type is never printable -- so the
+prompt is hardened against lettering before it is sent.
+
+Artwork is generated for the front panel, cover-cropped to the panel's bleed box,
+and resampled to the requested resolution. The response reports the artwork's
+native resolution so nobody mistakes an upscale for real 300 dpi detail.
+"""
+
+from __future__ import annotations
+
+import base64
+import io
+import logging
+import os
+from dataclasses import dataclass, field
+from typing import Literal
+
+from PIL import Image
+
+log = logging.getLogger("bookworm.imagegen")
+
+MODEL = os.environ.get("BOOKWORM_IMAGE_MODEL", "gpt-image-2")
+QUALITY = os.environ.get("BOOKWORM_IMAGE_QUALITY", "high")
+
+#: Sizes gpt-image models accept, with their aspect ratios (w/h).
+_SIZES: tuple[tuple[str, float], ...] = (
+    ("1024x1536", 1024 / 1536),
+    ("1024x1024", 1.0),
+    ("1536x1024", 1536 / 1024),
+)
+
+Treatment = Literal["none", "duotone", "grayscale"]
+
+_PROMPT_GUARDS = (
+    "Absolutely no text, no letters, no words, no numbers, no signatures, no logos "
+    "and no book-cover mockup: this is artwork only, and all typography is added "
+    "later. Fill the entire frame edge to edge with no border, no frame and no "
+    "margin. Painterly matte finish, printable flat colour, no photographic "
+    "lens effects, no drop shadows, no 3D rendering."
+)
+
+
+@dataclass
+class Artwork:
+    image: Image.Image
+    meta: dict = field(default_factory=dict)
+
+
+class ImageGenerationError(RuntimeError):
+    pass
+
+
+def _best_size(aspect_w_over_h: float) -> str:
+    return min(_SIZES, key=lambda s: abs(s[1] - aspect_w_over_h))[0]
+
+
+def build_prompt(image_prompt: str, palette_hexes: tuple[str, ...]) -> str:
+    """Harden the art director's prompt before it reaches the image model."""
+    colours = ", ".join(palette_hexes)
+    return (
+        f"{image_prompt.strip()}\n\n"
+        f"Restrict the palette to these colours and close neighbours of them: {colours}. "
+        f"{_PROMPT_GUARDS}"
+    )
+
+
+async def generate(
+    image_prompt: str,
+    palette_hexes: tuple[str, ...],
+    *,
+    target_w_px: int,
+    target_h_px: int,
+    treatment: Treatment = "duotone",
+    duotone_colours: tuple[str, str] | None = None,
+    model: str | None = None,
+    timeout: float = 180.0,
+) -> Artwork | None:
+    """Paint the front-cover artwork, or return ``None`` if OpenAI is unavailable.
+
+    Returning ``None`` rather than raising lets the renderer fall back to a
+    procedural motif, so a missing key degrades the cover instead of the request.
+    """
+    try:
+        from openai import AsyncOpenAI
+    except ImportError:  # pragma: no cover
+        log.info("openai package not installed; skipping artwork")
+        return None
+
+    if not os.environ.get("OPENAI_API_KEY"):
+        log.info("OPENAI_API_KEY not set; skipping artwork")
+        return None
+
+    import openai
+
+    model = model or MODEL
+    size = _best_size(target_w_px / target_h_px)
+    prompt = build_prompt(image_prompt, palette_hexes)
+
+    client = AsyncOpenAI(timeout=timeout)
+    try:
+        response = await client.images.generate(
+            model=model,
+            prompt=prompt,
+            size=size,
+            quality=QUALITY,
+            output_format="png",
+            n=1,
+        )
+    except (TimeoutError, openai.OpenAIError) as exc:
+        log.warning("image generation failed (%s); falling back to a motif", exc)
+        return None
+
+    datum = response.data[0] if response.data else None
+    if datum is None or not datum.b64_json:
+        log.warning("image generation returned no image data; falling back to a motif")
+        return None
+
+    raw = base64.b64decode(datum.b64_json)
+    native = Image.open(io.BytesIO(raw)).convert("RGB")
+    native_w, native_h = native.size
+
+    art = cover_crop(native, target_w_px, target_h_px)
+    if treatment == "grayscale":
+        art = art.convert("L").convert("RGB")
+    elif treatment == "duotone" and duotone_colours:
+        art = duotone(art, *duotone_colours)
+
+    return Artwork(
+        image=art,
+        meta={
+            "provider": "openai",
+            "model": model,
+            "quality": QUALITY,
+            "requested_size": size,
+            "native_px": [native_w, native_h],
+            "treatment": treatment,
+            "revised_prompt": getattr(datum, "revised_prompt", None),
+            "prompt": prompt,
+        },
+    )
+
+
+def cover_crop(img: Image.Image, target_w: int, target_h: int) -> Image.Image:
+    """Scale and centre-crop to exactly ``target_w`` x ``target_h`` without distortion."""
+    src_w, src_h = img.size
+    scale = max(target_w / src_w, target_h / src_h)
+    new = (max(1, round(src_w * scale)), max(1, round(src_h * scale)))
+    resized = img.resize(new, Image.LANCZOS)
+    left = (new[0] - target_w) // 2
+    top = (new[1] - target_h) // 2
+    return resized.crop((left, top, left + target_w, top + target_h))
+
+
+def duotone(img: Image.Image, shadow_hex: str, highlight_hex: str) -> Image.Image:
+    """Map luminance onto two palette colours, which holds the cover together."""
+    lo = _rgb(shadow_hex)
+    hi = _rgb(highlight_hex)
+    grey = img.convert("L")
+    ramp = []
+    for channel in range(3):
+        ramp += [
+            round(lo[channel] + (hi[channel] - lo[channel]) * i / 255) for i in range(256)
+        ]
+    return grey.convert("RGB").point(ramp)
+
+
+def _rgb(hex_colour: str) -> tuple[int, int, int]:
+    h = hex_colour.lstrip("#")
+    return tuple(int(h[i : i + 2], 16) for i in (0, 2, 4))  # type: ignore[return-value]
+
+
+def to_data_uri(img: Image.Image, *, quality: int = 92) -> str:
+    """Encode for embedding in the SVG. JPEG, because artwork is continuous-tone."""
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=quality, subsampling=1, optimize=True)
+    encoded = base64.b64encode(buf.getvalue()).decode("ascii")
+    return f"data:image/jpeg;base64,{encoded}"
+
+
+def effective_dpi(native_px: int, extent_mm: float) -> int:
+    """True resolution of the artwork over the panel it covers."""
+    if extent_mm <= 0:
+        return 0
+    return round(native_px / (extent_mm / 25.4))
