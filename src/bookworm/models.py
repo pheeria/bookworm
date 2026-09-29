@@ -6,7 +6,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .artdirection import MOTIFS, TEMPLATES
+from .artdirection import MOTIFS, STYLES, TEMPLATES
 from .formats import DEFAULT_FORMAT, FORMATS
 from .palettes import PALETTE_KEYS
 from .render import ASSETS
@@ -53,9 +53,22 @@ class CoverRequest(BaseModel):
         default=None, description='Gattungsbezeichnung, e.g. "Roman".'
     )
     blurb: str | None = Field(default=None, description="Override the back-cover copy.")
+    style: Literal[STYLES] = Field(  # type: ignore[valid-type]
+        default="illustrated",
+        description=(
+            "The register the cover is briefed in. illustrated: a drawn, figurative, "
+            "warmly coloured picture carrying the cover. painterly: a painting, "
+            "atmospheric and tonal. typographic: type-led and austere, imagery "
+            "abstract or absent."
+        ),
+    )
     treatment: Literal["none", "duotone", "grayscale"] = Field(
-        default="duotone",
-        description="Post-process applied to generated artwork to hold the palette.",
+        default="none",
+        description=(
+            "Post-process applied to generated artwork. 'duotone' maps it onto two "
+            "palette colours, which unifies but discards all hue; 'none' keeps the "
+            "artwork's own colour."
+        ),
     )
 
     # --- output ------------------------------------------------------------
@@ -95,6 +108,7 @@ class FormatInfo(BaseModel):
 
 class CatalogueResponse(BaseModel):
     formats: list[FormatInfo]
+    styles: list[str]
     templates: list[str]
     type_families: list[str]
     palettes: list[dict[str, Any]]

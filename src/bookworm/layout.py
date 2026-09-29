@@ -198,6 +198,8 @@ def artwork_plan(direction: ArtDirection, geo: Geometry) -> Rect | None:
         return (0.0, top, cw, ch - top)
     if t == "didone_centre":
         return (b + m, b + ph * 0.28, pw - 2 * m, ph * 0.40)
+    if t == "illustrated_full":
+        return (0.0, 0.0, cw, ch)
     return (0.0, 0.0, cw, ch)
 
 
@@ -623,12 +625,112 @@ def _front_photo_duotone(ctx: Ctx) -> str:
     return "".join(out)
 
 
+def _front_illustrated_full(ctx: Ctx) -> str:
+    """The illustration runs the whole cover; the type sits in a panel over it.
+
+    The panel is what makes an illustrated cover readable without asking the image
+    model to leave a convenient empty corner, which it will not reliably do. It is
+    also the idiom: a cartouche holding the type over a full-bleed picture.
+    """
+    g, d, c, p = ctx.geo, ctx.direction, ctx.content, ctx.palette
+    b, pw, ph, m = g.bleed_mm, g.panel_w_mm, g.panel_h_mm, ctx.margin
+    fam = d.type_family
+    out = []
+
+    rect = artwork_plan(d, g)
+    out.append(_artwork_or_motif(ctx, rect, "clip-front-art"))
+
+    # Panel geometry: inset from the trim, sitting low so the picture keeps the
+    # upper two thirds, which is where an illustration's subject usually lives.
+    pad = m * 0.72
+    panel_x = b + m * 0.62
+    panel_w = pw - 2 * m * 0.62
+    measure = panel_w - 2 * pad
+
+    author_size = pw * 0.036
+    genre_size = pw * 0.030
+    imprint_size = pw * 0.026
+
+    title = fit_display(
+        cased(c.title, d.title_case),
+        fam,
+        max_width=measure,
+        max_height=ph * 0.20,
+        max_lines=3,
+        leading=0.98,
+        tracking=-0.01,
+    )
+    fd = face(fam, "display")
+    title_h = title.height + fd.cap_height * title.size
+
+    panel_h = (
+        pad
+        + author_size * 1.9
+        + title_h
+        + genre_size * 2.1
+        + imprint_size * 1.9
+        + pad
+    )
+    panel_y = b + ph - m * 0.62 - panel_h
+    out.append(_rect(panel_x, panel_y, panel_w, panel_h, p.ground))
+
+    y = panel_y + pad
+    frag, author_base = draw_label(
+        c.author.upper(),
+        fam,
+        author_size,
+        x=panel_x + pad,
+        cap_top=y,
+        fill=p.accent,
+        tracking=0.16,
+        weight="bold",
+    )
+    out.append(frag)
+
+    frag, title_base = draw_block(
+        title,
+        fam,
+        "display",
+        x=panel_x + pad,
+        cap_top=author_base + author_size * 0.8,
+        fill=p.ink,
+    )
+    out.append(frag)
+
+    frag, genre_base = draw_label(
+        c.genre_line,
+        fam,
+        genre_size,
+        x=panel_x + pad,
+        cap_top=title_base + genre_size * 1.1,
+        fill=p.accent,
+        tracking=0.06,
+        weight="italic",
+    )
+    out.append(frag)
+
+    frag, _ = draw_label(
+        c.imprint.upper(),
+        fam,
+        imprint_size,
+        x=panel_x + panel_w - pad,
+        cap_top=genre_base + imprint_size * 0.9,
+        align="right",
+        fill=p.ink,
+        tracking=0.2,
+        weight="bold",
+    )
+    out.append(frag)
+    return "".join(out)
+
+
 FRONT_TEMPLATES = {
     "kiwi_flat": _front_kiwi_flat,
     "rororo_band": _front_rororo_band,
     "type_block": _front_type_block,
     "didone_centre": _front_didone_centre,
     "photo_duotone": _front_photo_duotone,
+    "illustrated_full": _front_illustrated_full,
 }
 
 

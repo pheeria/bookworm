@@ -34,13 +34,31 @@ _SIZES: tuple[tuple[str, float], ...] = (
 
 Treatment = Literal["none", "duotone", "grayscale"]
 
+#: Hard constraints only. Anything about medium, colour or subject belongs in the
+#: art director's prompt -- baking a house style in here is how every cover ends up
+#: looking the same.
 _PROMPT_GUARDS = (
     "Absolutely no text, no letters, no words, no numbers, no signatures, no logos "
     "and no book-cover mockup: this is artwork only, and all typography is added "
     "later. Fill the entire frame edge to edge with no border, no frame and no "
-    "margin. Painterly matte finish, printable flat colour, no photographic "
-    "lens effects, no drop shadows, no 3D rendering."
+    "margin. Avoid 3D rendering and stock-photo styling."
 )
+
+#: How tightly the artwork is held to the cover palette, per register.
+_PALETTE_INSTRUCTION = {
+    "illustrated": (
+        "Let these colours lead the scheme, but mix freely around them -- a hand-"
+        "mixed illustration palette, not a restricted one: {colours}."
+    ),
+    "painterly": (
+        "Build the painting's colour around these, with the full tonal range they "
+        "imply: {colours}."
+    ),
+    "typographic": (
+        "Restrict the palette to these colours and close neighbours of them: "
+        "{colours}."
+    ),
+}
 
 
 @dataclass
@@ -57,14 +75,17 @@ def _best_size(aspect_w_over_h: float) -> str:
     return min(_SIZES, key=lambda s: abs(s[1] - aspect_w_over_h))[0]
 
 
-def build_prompt(image_prompt: str, palette_hexes: tuple[str, ...]) -> str:
+def build_prompt(
+    image_prompt: str,
+    palette_hexes: tuple[str, ...],
+    style: str = "illustrated",
+) -> str:
     """Harden the art director's prompt before it reaches the image model."""
     colours = ", ".join(palette_hexes)
-    return (
-        f"{image_prompt.strip()}\n\n"
-        f"Restrict the palette to these colours and close neighbours of them: {colours}. "
-        f"{_PROMPT_GUARDS}"
-    )
+    palette_rule = _PALETTE_INSTRUCTION.get(
+        style, _PALETTE_INSTRUCTION["illustrated"]
+    ).format(colours=colours)
+    return f"{image_prompt.strip()}\n\n{palette_rule} {_PROMPT_GUARDS}"
 
 
 async def generate(
@@ -73,8 +94,9 @@ async def generate(
     *,
     target_w_px: int,
     target_h_px: int,
-    treatment: Treatment = "duotone",
+    treatment: Treatment = "none",
     duotone_colours: tuple[str, str] | None = None,
+    style: str = "illustrated",
     model: str | None = None,
     timeout: float = 180.0,
 ) -> Artwork | None:
@@ -97,7 +119,7 @@ async def generate(
 
     model = model or MODEL
     size = _best_size(target_w_px / target_h_px)
-    prompt = build_prompt(image_prompt, palette_hexes)
+    prompt = build_prompt(image_prompt, palette_hexes, style)
 
     client = AsyncOpenAI(timeout=timeout)
     try:

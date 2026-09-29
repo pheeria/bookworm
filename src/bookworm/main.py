@@ -17,7 +17,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query, Response
 from fastapi.responses import FileResponse
 
-from .artdirection import MOTIFS, TEMPLATES
+from .artdirection import MOTIFS, STYLES, TEMPLATES
 from .formats import FORMATS, spine_mm
 from .models import (
     CatalogueResponse,
@@ -82,6 +82,7 @@ def catalogue() -> CatalogueResponse:
             )
             for f in FORMATS.values()
         ],
+        styles=list(STYLES),
         templates=list(TEMPLATES),
         type_families=list(TYPE_FAMILIES),
         palettes=[
@@ -141,6 +142,7 @@ async def generate(
             motif=request.motif,
             genre_line=request.genre_line,
             blurb=request.blurb,
+            style=request.style,
             treatment=request.treatment,
             seed=request.seed,
             marks=request.marks,

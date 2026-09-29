@@ -16,7 +16,7 @@ from pathlib import Path
 from fastapi.concurrency import run_in_threadpool
 
 from . import imagegen
-from .artdirection import apply_overrides, direct
+from .artdirection import DEFAULT_STYLE, apply_overrides, direct
 from .formats import geometry, px, resolve_format
 from .layout import Content, Ctx, artwork_plan
 from .palettes import luminance
@@ -59,7 +59,8 @@ async def create_cover(
     motif: str | None = None,
     genre_line: str | None = None,
     blurb: str | None = None,
-    treatment: str = "duotone",
+    style: str = DEFAULT_STYLE,
+    treatment: str = "none",
     seed: int | None = None,
     marks: bool = False,
     spine_direction: str = "top_to_bottom",
@@ -68,7 +69,7 @@ async def create_cover(
     fmt = resolve_format(format_key)
     geo = geometry(fmt, pages=pages, dpi=dpi)
 
-    direction, ad_meta = await direct(text, title, author)
+    direction, ad_meta = await direct(text, title, author, style=style)
     direction = apply_overrides(
         direction,
         template=template,
@@ -104,6 +105,7 @@ async def create_cover(
             target_h_px=px(plan[3], dpi),
             treatment=treatment,  # type: ignore[arg-type]
             duotone_colours=_duotone_pair(hexes),
+            style=style,
         )
         if art is None:
             notes.append(
@@ -166,6 +168,7 @@ async def create_cover(
             "blurb": content.blurb,
             "imprint": content.imprint,
         },
+        "style": style,
         "seed": seed,
         "files": {k: str(v) for k, v in result.files.items()},
         "notes": result.notes,

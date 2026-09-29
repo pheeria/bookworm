@@ -32,6 +32,7 @@ Template = Literal[
     "type_block",
     "didone_centre",
     "photo_duotone",
+    "illustrated_full",
 ]
 TEMPLATES: tuple[str, ...] = (
     "rororo_band",
@@ -39,6 +40,7 @@ TEMPLATES: tuple[str, ...] = (
     "type_block",
     "didone_centre",
     "photo_duotone",
+    "illustrated_full",
 )
 
 TypeFamily = Literal[
@@ -77,6 +79,14 @@ TEMPLATE_DEFAULT_FAMILY: dict[str, str] = {
     "type_block": "grotesk",
     "didone_centre": "neoclassical",
     "photo_duotone": "geometric",
+    "illustrated_full": "humanist",
+}
+
+#: Templates the fallback brief picks from, per register.
+STYLE_TEMPLATES: dict[str, tuple[str, ...]] = {
+    "illustrated": ("illustrated_full", "photo_duotone"),
+    "painterly": ("photo_duotone", "illustrated_full", "didone_centre"),
+    "typographic": ("type_block", "kiwi_flat", "rororo_band", "didone_centre"),
 }
 
 HEX = r"^#[0-9A-Fa-f]{6}$"
@@ -94,11 +104,13 @@ class ArtDirection(BaseModel):
     )
     template: Template = Field(
         description=(
-            "Layout. rororo_band: full-bleed ground with a horizontal band holding the "
-            "title. kiwi_flat: flat ground, left-aligned type stack in the upper half. "
+            "Layout. illustrated_full: the picture runs across the whole cover and "
+            "the type sits in a panel over it -- the layout for an illustrated cover. "
+            "photo_duotone: artwork across the upper two thirds, type below. "
+            "rororo_band: full-bleed ground with a horizontal band holding the title. "
+            "kiwi_flat: flat ground, left-aligned type stack in the upper half. "
             "type_block: display type filling the whole cover edge to edge, no imagery. "
-            "didone_centre: centred neoclassical setting with hairline rules. "
-            "photo_duotone: artwork across the upper two thirds, type below."
+            "didone_centre: centred neoclassical setting with hairline rules."
         )
     )
     type_family: TypeFamily = Field(
@@ -110,8 +122,11 @@ class ArtDirection(BaseModel):
     )
     artwork: Artwork = Field(
         description=(
-            "generated: have the image model paint artwork. procedural: an abstract "
-            "vector motif. none: pure typography, which is idiomatic for this market."
+            "generated: have the image model paint artwork. This is the normal "
+            "choice. procedural: an abstract vector motif, for covers that want a "
+            "constructed geometric mark rather than a painted image. none: pure "
+            "typography -- reserve it for when the type genuinely carries the cover "
+            "alone, not as a default."
         )
     )
     motif: Motif = Field(
@@ -138,10 +153,12 @@ class ArtDirection(BaseModel):
     )
     image_prompt: str = Field(
         description=(
-            "Prompt for the image model, in English. Describe an abstract or "
-            "semi-figurative painted image in the palette above. It must contain no "
-            "lettering, no words and no book-cover furniture of any kind, because the "
-            "type is set separately on top of it."
+            "Prompt for the image model, in English, in the register the system "
+            "prompt sets. Be concrete and specific -- name the subject, the medium, "
+            "the light, the season, one or two telling details. A vague prompt "
+            "returns a generic wash. Two to four sentences. It must contain no "
+            "lettering, no words and no book-cover furniture of any kind, because "
+            "the type is set separately on top of it."
         )
     )
     rationale: str = Field(description="One or two sentences on why this cover fits the book.")
@@ -158,28 +175,79 @@ class ArtDirection(BaseModel):
         )
 
 
-SYSTEM = """\
+_SYSTEM_BASE = """\
 You are the art director for a German literary publisher in the tradition of \
 Kiepenheuer & Witsch and Rowohlt. You brief covers for the German trade market.
 
-House idiom, which you follow:
-- Typography carries the cover. Flat colour grounds, one strong display face, \
-generous white space. Decoration is suspect.
+Always true, whatever the register:
 - The title is the largest element. The author's name is set smaller, usually \
 letterspaced, above or below the title.
 - A Gattungsbezeichnung ("Roman", "Erzählungen", "Essays") is printed under the \
 title. This is expected on German literary covers; choose the right one.
-- Colour is flat, confident and a little austere. Two or three colours, not five. \
-Gradients and drop shadows are not part of this idiom.
-- Imagery, when it appears at all, is abstract, painterly or a single arresting \
-object. Never a literal illustration of the plot, never stock photography.
-
-You never put lettering in the image prompt: the type is set separately, in vector, \
-on top of whatever the image model returns. An image with letters in it is unusable.
-
-Choose colours that give the ink real contrast against the ground. Write the blurb \
-and genre line in German even when the input is in another language.\
+- Pick colours that give the ink real contrast against the ground. A cover nobody \
+can read at thumbnail size has failed.
+- You never put lettering in the image prompt. The type is set separately, in \
+vector, on top of whatever the image model returns; an image with letters in it is \
+unusable. Describe the picture, not the cover.
+- Write the blurb and the genre line in German even when the input is in another \
+language.
 """
+
+#: The register the cover is briefed in. This is the caller's choice, not yours --
+#: each one is a legitimate strand of the German trade market, and the house style
+#: should not be smuggled in as a default.
+STYLE_GUIDANCE: dict[str, str] = {
+    "illustrated": """\
+Register for this cover: ILLUSTRATED AND CHARMING.
+
+- The picture carries the cover and it is a drawn illustration: gouache, coloured \
+pencil, ink and wash, or cut paper. Visible hand, visible texture, a little \
+imperfect.
+- It is figurative and specific. Show the thing: the house, the harbour, the two \
+sisters at the kitchen table, the dog on the stairs, the pear tree in a courtyard. \
+A reader should be able to say what is in the picture. Warmth and wit are wanted; \
+so is a small telling detail.
+- Colour is generous. Four, six, eight colours, in a scheme that feels mixed by \
+hand rather than picked from a system. Sunlight, weather, time of day.
+- Prefer `template: "illustrated_full"`, which runs the illustration across the \
+whole cover and sets the type in a panel over it.
+- Set `artwork: "generated"`. An illustrated cover without an illustration is \
+nothing.
+- What to avoid: corporate flat vector, gradient mesh, 3D rendering, stock \
+photography, anything that looks like an app icon.\
+""",
+    "painterly": """\
+Register for this cover: PAINTERLY AND LITERARY.
+
+- The picture is a painting: oil or gouache, real brushwork, atmosphere over \
+outline. A landscape, an interior, a figure seen from behind, a still life.
+- Figurative but unhurried -- it can suggest the book's world rather than state its \
+plot. Mood carries more than incident.
+- Colour is full and tonal, not restricted to a flat scheme. Let light do the work.
+- `template: "photo_duotone"` or `"illustrated_full"` both suit this. Set \
+`artwork: "generated"`.\
+""",
+    "typographic": """\
+Register for this cover: TYPOGRAPHIC AND AUSTERE.
+
+- Typography carries the cover. Flat colour grounds, one strong display face, \
+generous white space. Decoration is suspect.
+- Colour is flat and confident: two or three colours, not five. No gradients, no \
+drop shadows.
+- Imagery, if any, is abstract -- a geometric mark or a composition reduced to a \
+few planes. Never a literal illustration of the plot.
+- `artwork: "none"` or `"procedural"` are both right here. `type_block` and \
+`kiwi_flat` are the layouts for it.\
+""",
+}
+
+STYLES: tuple[str, ...] = ("illustrated", "painterly", "typographic")
+DEFAULT_STYLE = "illustrated"
+
+
+def system_prompt(style: str = DEFAULT_STYLE) -> str:
+    guidance = STYLE_GUIDANCE.get(style, STYLE_GUIDANCE[DEFAULT_STYLE])
+    return f"{_SYSTEM_BASE}\n{guidance}"
 
 
 def _clip(text: str) -> tuple[str, bool]:
@@ -208,9 +276,32 @@ _GENRE_HINTS = (
 )
 
 
-def fallback_direction(text: str, title: str, author: str) -> ArtDirection:
+#: Fallback image prompts per register. Deliberately concrete -- a vague prompt is
+#: what produces the generic abstract wash.
+_FALLBACK_IMAGE_PROMPT = {
+    "illustrated": (
+        "A warm figurative gouache illustration of a small harbour town at "
+        "mid-afternoon: pitched roofs, a washing line, a cat asleep on a wall, one "
+        "boat drawn up on the mud. Visible brush and pencil texture, generous "
+        "hand-mixed colour, a little imperfect."
+    ),
+    "painterly": (
+        "An oil painting of a wide coastal landscape in changing weather, seen from "
+        "a low bank: pale sand, shallow water catching the light, a heavy sky. Real "
+        "brushwork, atmospheric, tonal rather than flat."
+    ),
+    "typographic": (
+        "An abstract geometric composition of a few flat overlapping planes, matte "
+        "gouache texture, no depth, no lettering."
+    ),
+}
+
+
+def fallback_direction(
+    text: str, title: str, author: str, style: str = DEFAULT_STYLE
+) -> ArtDirection:
     """Deterministic brief, used when the model is unavailable."""
-    seed = _seed(text, title, author)
+    seed = _seed(text, title, author, style)
     lowered = f"{title} {text}".lower()
 
     genre = "Roman"
@@ -219,8 +310,11 @@ def fallback_direction(text: str, title: str, author: str) -> ArtDirection:
             genre = label
             break
 
-    palette = choose_palette(seed)
-    template = TEMPLATES[(seed >> 8) % len(TEMPLATES)]
+    # Warm palettes for the illustrated register, the full set otherwise.
+    tone = ("charmant", "warm", "heiter") if style == "illustrated" else ()
+    palette = choose_palette(seed, tone)
+    candidates = STYLE_TEMPLATES.get(style, TEMPLATES)
+    template = candidates[(seed >> 8) % len(candidates)]
     family = TEMPLATE_DEFAULT_FAMILY[template]
     motif = MOTIFS[(seed >> 16) % (len(MOTIFS) - 1)]
 
@@ -233,7 +327,9 @@ def fallback_direction(text: str, title: str, author: str) -> ArtDirection:
         keywords=list(palette.tone[:4]) or ["literatur"],
         template=template,  # type: ignore[arg-type]
         type_family=family,  # type: ignore[arg-type]
-        artwork="procedural" if template == "photo_duotone" else "none",
+        # Ask for a picture by default. `type_block` has no room for one, so it
+        # falls through to pure typography and the pipeline says so in `notes`.
+        artwork="none" if template == "type_block" else "generated",
         motif=motif,  # type: ignore[arg-type]
         ground=palette.ground,
         ink=palette.ink,
@@ -242,9 +338,8 @@ def fallback_direction(text: str, title: str, author: str) -> ArtDirection:
         title_case="upper" if family in ("geometric", "grotesk", "grotesk_condensed") else "title",
         genre_line=genre,
         blurb=blurb[:600],
-        image_prompt=(
-            f"Abstract painted composition in {palette.label.lower()} tones, "
-            "flat shapes, matte gouache texture, no lettering."
+        image_prompt=_FALLBACK_IMAGE_PROMPT.get(
+            style, _FALLBACK_IMAGE_PROMPT[DEFAULT_STYLE]
         ),
         rationale="Deterministic fallback brief: no art-direction model was reachable.",
     )
@@ -255,10 +350,11 @@ async def direct(
     title: str,
     author: str,
     *,
+    style: str = DEFAULT_STYLE,
     client: anthropic.AsyncAnthropic | None = None,
 ) -> tuple[ArtDirection, dict]:
     """Produce a cover brief. Returns the brief and metadata about how it was made."""
-    meta: dict = {"source": "claude", "model": MODEL}
+    meta: dict = {"source": "claude", "model": MODEL, "style": style}
     prompt_text, clipped = _clip(text)
     meta["input_clipped"] = clipped
 
@@ -267,7 +363,7 @@ async def direct(
     except Exception as exc:  # no credentials resolvable
         log.info("art direction falling back: %s", exc)
         meta.update(source="fallback", reason=str(exc))
-        return fallback_direction(text, title, author), meta
+        return fallback_direction(text, title, author, style), meta
 
     user = (
         f"Titel: {title}\n"
@@ -280,7 +376,7 @@ async def direct(
         response = await ac.messages.parse(
             model=MODEL,
             max_tokens=8000,
-            system=SYSTEM,
+            system=system_prompt(style),
             thinking={"type": "adaptive"},
             messages=[{"role": "user", "content": user}],
             output_format=ArtDirection,
@@ -289,7 +385,7 @@ async def direct(
             detail = getattr(response.stop_details, "category", None)
             log.warning("art direction refused (%s), using fallback", detail)
             meta.update(source="fallback", reason=f"refusal:{detail}")
-            return fallback_direction(text, title, author), meta
+            return fallback_direction(text, title, author, style), meta
         direction = response.parsed_output
         if direction is None:
             raise ValueError("model returned no parsed output")
@@ -301,7 +397,7 @@ async def direct(
     except (anthropic.APIError, ValueError, TypeError) as exc:
         log.warning("art direction failed (%s), using fallback", exc)
         meta.update(source="fallback", reason=str(exc))
-        return fallback_direction(text, title, author), meta
+        return fallback_direction(text, title, author, style), meta
 
 
 def apply_overrides(

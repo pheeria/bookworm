@@ -59,6 +59,14 @@ missing key never turns into a 500:
 
 Everything else — geometry, typesetting, rasterising — is local and deterministic.
 
+Degrading quietly is convenient but easy to misread: a cover with a flat vector
+motif and no picture usually means a key did not resolve, not that the art
+direction chose austerity. Check `art_direction_meta.source` and `notes`, or call
+`GET /healthz`, which reports whether each key is visible.
+
+`load_dotenv()` resolves `.env` relative to the package, so it is found when the
+service runs from the project. A script living elsewhere has to pass the path.
+
 ## Formats
 
 `GET /catalogue` lists them with computed spine widths. These are the customary
@@ -132,13 +140,33 @@ faces are licensed for use on the machine, not for redistribution.
 
 ## Layouts
 
+### Style registers
+
+`style` picks the register the cover is briefed in. It conditions the system prompt,
+the fallback brief, the template shortlist and how tightly the artwork is held to
+the palette. There is no single German house style, so this is the caller's choice
+rather than a default baked into the prompt.
+
+| `style` | What you get |
+|---|---|
+| `illustrated` *(default)* | A drawn, figurative picture carrying the cover — gouache, coloured pencil, ink and wash. Specific subjects and telling details, generous hand-mixed colour. `illustrated_full` layout. |
+| `painterly` | A painting: oil or gouache, real brushwork, atmosphere over outline. Tonal, full colour range. |
+| `typographic` | Type-led and austere. Flat grounds, two or three colours, imagery abstract or absent. |
+
+### Templates
+
 | Template | Idiom |
 |---|---|
+| `illustrated_full` | The picture runs across the whole cover; the type sits in a panel over it. The layout for an illustrated cover. |
+| `photo_duotone` | Artwork across the upper two thirds, type below. |
 | `kiwi_flat` | Flat ground, left-aligned type stack in the upper half, artwork below. |
 | `rororo_band` | Full-bleed ground with a horizontal band carrying the title. |
 | `type_block` | Display type filling the cover edge to edge, each line set to its own size. No imagery. |
 | `didone_centre` | Centred neoclassical setting between hairline rules. |
-| `photo_duotone` | Artwork across the upper two thirds, type below. |
+
+The type panel in `illustrated_full` exists because the image model will not
+reliably leave a clear corner for the title, and asking it to produces worse
+pictures. A panel over a full-bleed illustration is both legible and idiomatic.
 
 Any part of the brief can be pinned: `template`, `type_family`, `palette`,
 `artwork`, `motif`, `genre_line`, `blurb`, `seed`. Pinning the template moves the
@@ -160,7 +188,19 @@ Set via env: `BOOKWORM_CLAUDE_MODEL` (default `claude-opus-5`) and
 Artwork is generated once, for the front panel, and cover-cropped to the planned
 placement. The response reports the artwork's `effective_dpi` over that placement
 and flags it in `notes` when it had to be resampled up, so an upscale is never
-passed off as native detail.
+passed off as native detail. At 1024 px native that is around 190–260 dpi
+depending on the placement, so artwork is the soft part of an otherwise 300 dpi
+cover; the type stays vector regardless.
+
+`treatment` defaults to `none`, so artwork keeps the colour it was painted in.
+`duotone` maps luminance onto the two ends of the palette: it makes image and type
+read as one system, but it discards *all* hue, including any accent the art
+direction deliberately asked for. It is a strong effect, worth choosing on purpose
+and not worth having as a default.
+
+Cohesion without duotone comes from the prompt instead — the palette is passed to
+the image model, loosely for `illustrated` ("let these colours lead, mix freely
+around them") and strictly for `typographic` ("restrict the palette to these").
 
 ## Tests
 
@@ -168,7 +208,11 @@ passed off as native detail.
 uv run pytest
 ```
 
-36 tests, no network and no credentials: the art-direction and image-generation
-steps are exercised through their fallbacks, and the OpenAI path is covered with a
-stub client. A live image-generation call has not been exercised — that needs a
-real `OPENAI_API_KEY`.
+48 tests, ~2 seconds, no network and no credentials. `tests/conftest.py` strips
+`ANTHROPIC_API_KEY` / `OPENAI_API_KEY` from the environment for every test, because
+`bookworm.main` loads `.env` at import — without that the suite makes live, billed
+image-generation calls. Tests that exercise a provider path stub the client and set
+their own key.
+
+Both live paths have been exercised end to end once: `claude-opus-5` for the brief
+and `gpt-image-2` for the artwork, ~165 s wall clock for one cover.

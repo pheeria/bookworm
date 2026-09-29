@@ -15,6 +15,7 @@ from PIL import Image
 
 from bookworm import imagegen
 from bookworm.formats import FORMATS, geometry
+from bookworm.imagegen import build_prompt
 from bookworm.layout import artwork_plan
 from bookworm.pipeline import create_cover
 
@@ -89,6 +90,33 @@ async def test_duotone_treatment_pulls_the_artwork_into_the_palette(stub_openai)
         assert 0x10 <= r <= 0xED and 0x1A <= g <= 0xE7 and 0x2C <= b <= 0xDA
 
 
+def test_prompt_guards_do_not_dictate_a_house_style():
+    """The guards carry hard constraints only.
+
+    Medium, colour and subject belong to the art director; baking a look in here
+    is what made every cover come back flat and abstract.
+    """
+    prompt = build_prompt("A harbour town in gouache", ("#F6E3B6",), "illustrated")
+    for banned in ("flat colour", "austere", "abstract", "matte finish"):
+        assert banned not in prompt.lower(), f"guards still dictate {banned!r}"
+    assert "no letters" in prompt
+    assert "3D rendering" in prompt
+
+
+@pytest.mark.parametrize(
+    ("style", "expected"),
+    [
+        ("illustrated", "mix freely"),
+        ("painterly", "full tonal range"),
+        ("typographic", "Restrict the palette"),
+    ],
+)
+def test_palette_is_held_loosely_for_illustrated_covers(style, expected):
+    prompt = build_prompt("A harbour town", ("#F6E3B6", "#D2662A"), style)
+    assert expected in prompt
+    assert "#F6E3B6" in prompt
+
+
 async def test_missing_key_degrades_instead_of_raising(monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     art = await imagegen.generate(
@@ -136,7 +164,9 @@ async def test_artwork_is_embedded_in_the_cover_and_reported(tmp_path, stub_open
     meta = result["artwork"]
     assert meta is not None
     assert meta["provider"] == "openai"
-    assert meta["treatment"] == "duotone"
+    # Artwork keeps its own colour by default; duotone is opt-in because it
+    # discards every hue the art direction asked for.
+    assert meta["treatment"] == "none"
 
     # The reported resolution is the artwork's native height over the placement
     # it actually covers, not the requested output dpi.

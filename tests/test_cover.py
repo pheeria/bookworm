@@ -377,3 +377,62 @@ def test_asset_route_refuses_traversal(tmp_path, monkeypatch):
     monkeypatch.setattr("bookworm.main.OUTPUT_DIR", tmp_path)
     assert client.get("/covers/abc123/../../etc/passwd").status_code == 404
     assert client.get("/covers/..%2F..%2Fetc/passwd").status_code == 404
+
+
+# --------------------------------------------------------------------------- #
+# Style registers
+# --------------------------------------------------------------------------- #
+
+
+def test_illustrated_register_asks_for_a_picture():
+    """The default register must not quietly produce a type-only cover."""
+    from bookworm.artdirection import fallback_direction as fb
+
+    d = fb("Zwei Schwestern erben ein Haus.", "Das Haus", "J. Wiechert", "illustrated")
+    assert d.artwork == "generated"
+    assert d.template in ("illustrated_full", "photo_duotone")
+    # A concrete, figurative prompt -- not a generic abstract wash.
+    assert len(d.image_prompt) > 80
+    assert "abstract" not in d.image_prompt.lower()
+
+
+def test_typographic_register_stays_austere():
+    from bookworm.artdirection import fallback_direction as fb
+
+    d = fb("Ein Essay über Sprache.", "Sprache", "A. Autor", "typographic")
+    assert d.template in ("type_block", "kiwi_flat", "rororo_band", "didone_centre")
+
+
+def test_style_conditions_the_system_prompt():
+    from bookworm.artdirection import system_prompt
+
+    illustrated = system_prompt("illustrated")
+    typographic = system_prompt("typographic")
+    assert "ILLUSTRATED AND CHARMING" in illustrated
+    assert "Decoration is suspect" in typographic
+    assert "Decoration is suspect" not in illustrated
+    # The invariants survive in both.
+    for prompt in (illustrated, typographic):
+        assert "never put lettering" in prompt
+        assert "Gattungsbezeichnung" in prompt
+
+
+def test_illustrated_full_puts_the_type_in_a_panel_over_the_art():
+    ctx = _ctx(
+        title="Das letzte Haus am Deich",
+        template="illustrated_full",
+        artwork="procedural",
+        motif="blocks",
+    )
+    svg = build_front(ctx)
+    plan = artwork_plan(ctx.direction, ctx.geo)
+    assert plan == (0.0, 0.0, ctx.geo.front_bleed_w_mm, ctx.geo.front_bleed_h_mm)
+    # Ground panel over full-bleed art, then the type on top of that.
+    assert svg.count("<rect") >= 2
+    assert svg.count("<path") >= 4
+
+
+def test_catalogue_lists_the_style_registers():
+    body = client.get("/catalogue").json()
+    assert body["styles"] == ["illustrated", "painterly", "typographic"]
+    assert "illustrated_full" in body["templates"]

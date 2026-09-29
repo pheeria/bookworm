@@ -72,6 +72,21 @@ PALETTES: tuple[Palette, ...] = (
             ("traumhaft", "phantastisch", "nacht", "rausch")),
     Palette("sand", "Sand", "#D8C39A", "#241E15", "#1F4E5F", "#A8916A",
             ("trocken", "süden", "erinnerung", "warm")),
+    # Warmer register, for illustrated covers that want charm rather than rigour.
+    Palette("honig", "Honig", "#F6E3B6", "#3A2415", "#D2662A", "#8FA65B",
+            ("warm", "charmant", "sommer", "heiter")),
+    Palette("terrakotta", "Terrakotta", "#E8A87C", "#3B2118", "#7C4A32", "#4E7C6A",
+            ("warm", "charmant", "südlich", "erdig")),
+    Palette("pistazie", "Pistazie", "#CFE0B4", "#2A331E", "#C4553A", "#7B9A5E",
+            ("frisch", "heiter", "ländlich", "charmant")),
+    Palette("himmelblau", "Himmelblau", "#BBD9EC", "#1E3446", "#E0714A", "#E8C86A",
+            ("leicht", "heiter", "kindheit", "sommer")),
+    Palette("rosenrot", "Rosenrot", "#F2C9C4", "#3A1C22", "#B33A46", "#6E8F7B",
+            ("zart", "charmant", "romantisch", "warm")),
+    Palette("puder", "Puder", "#F0E0D0", "#33241C", "#C2703F", "#89A8A0",
+            ("sanft", "nostalgisch", "charmant", "intim")),
+    Palette("lavendel", "Lavendel", "#D8CCE6", "#2C2338", "#C96F8A", "#8AA86E",
+            ("traumhaft", "zart", "heiter", "phantastisch")),
 )
 
 PALETTES_BY_KEY = {p.key: p for p in PALETTES}
