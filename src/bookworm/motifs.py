@@ -4,8 +4,6 @@ Each motif draws into a box in millimetre coordinates and returns an SVG fragmen
 They are seeded, so the same request always yields the same cover.
 """
 
-from __future__ import annotations
-
 import random
 from collections.abc import Callable
 

@@ -6,8 +6,6 @@ and a secondary for motifs and the spine. They double as the fallback vocabulary
 when no art-direction model is reachable.
 """
 
-from __future__ import annotations
-
 from dataclasses import dataclass
 
 

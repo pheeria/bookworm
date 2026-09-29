@@ -9,8 +9,6 @@ sample books in examples/ can be used as real input without retyping anything.
 Talks to the running API by default; --local skips HTTP and calls the pipeline.
 """
 
-from __future__ import annotations
-
 import argparse
 import asyncio
 import html

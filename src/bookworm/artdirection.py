@@ -9,8 +9,6 @@ If no Anthropic credentials are reachable, or the call fails, a deterministic
 brief is derived from a hash of the input so the endpoint still returns a cover.
 """
 
-from __future__ import annotations
-
 import hashlib
 import logging
 import os

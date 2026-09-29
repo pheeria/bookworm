@@ -9,8 +9,6 @@ before going to press.
 Everything is computed in millimetres; ``px()`` converts at a given resolution.
 """
 
-from __future__ import annotations
-
 from dataclasses import dataclass, field
 from typing import Literal
 

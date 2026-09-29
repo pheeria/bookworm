@@ -1,7 +1,5 @@
 """Request and response schemas for the HTTP API."""
 
-from __future__ import annotations
-
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field

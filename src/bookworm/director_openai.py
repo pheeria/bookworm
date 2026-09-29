@@ -11,8 +11,6 @@ is a dependency and billing simplification, not a latency one -- ``image_quality
 is the setting that moves the number.
 """
 
-from __future__ import annotations
-
 import logging
 import os
 

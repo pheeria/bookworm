@@ -5,8 +5,6 @@ the planned placement, the duotone treatment, embedding, and the effective-dpi
 report. They do not call OpenAI; a live call needs OPENAI_API_KEY.
 """
 
-from __future__ import annotations
-
 import base64
 import io
 

@@ -4,8 +4,6 @@ The art-direction and image-generation steps both degrade to deterministic
 fallbacks without credentials, so the whole pipeline is exercised offline.
 """
 
-from __future__ import annotations
-
 import re
 
 import pytest

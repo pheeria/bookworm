@@ -1,7 +1,5 @@
 """SVG fragment primitives shared by the layout and the motifs."""
 
-from __future__ import annotations
-
 
 def n(v: float) -> str:
     return f"{v:.3f}"

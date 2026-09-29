@@ -9,8 +9,6 @@ Tests that exercise a provider path stub the client and set their own key, which
 overrides this because they request their fixture after the autouse one.
 """
 
-from __future__ import annotations
-
 import pytest
 
 _PROVIDER_VARS = (

@@ -6,8 +6,6 @@ geometry. All of this is CPU-bound and synchronous -- callers should push it to 
 worker thread.
 """
 
-from __future__ import annotations
-
 import io
 import json
 from dataclasses import dataclass, field

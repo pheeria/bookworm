@@ -9,8 +9,6 @@ and resampled to the requested resolution. The response reports the artwork's
 native resolution so nobody mistakes an upscale for real 300 dpi detail.
 """
 
-from __future__ import annotations
-
 import base64
 import io
 import logging

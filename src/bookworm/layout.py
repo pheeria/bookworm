@@ -8,8 +8,6 @@ Type is placed off the cap line rather than the baseline, because that is what t
 eye aligns to at display sizes.
 """
 
-from __future__ import annotations
-
 from dataclasses import dataclass, field
 
 from . import motifs

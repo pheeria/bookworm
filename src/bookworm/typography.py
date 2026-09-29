@@ -6,8 +6,6 @@ advances drive line fitting, the SVG, the PNG and the PDF -- and it means the
 output carries no font dependency, which is what a repro house wants.
 """
 
-from __future__ import annotations
-
 import logging
 import os
 from dataclasses import dataclass

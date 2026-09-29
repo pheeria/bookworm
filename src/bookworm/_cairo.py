@@ -10,8 +10,6 @@ Import this module before ``cairosvg`` anywhere it is needed; it re-exports the
 two conversion functions so callers can just use this module instead.
 """
 
-from __future__ import annotations
-
 import os
 import sys
 
