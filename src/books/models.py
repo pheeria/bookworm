@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 
 ReaderType = Literal["heart", "suspense", "trend", "discourse"]
 
-Color = Annotated[str, Field(pattern=r"^#[0-9a-f]{6}$")]
+Color = Annotated[str, Field(pattern=r"^#[0-9A-Fa-f]{6}$")]
 
 
 class BookTheme(BaseModel):

@@ -10,7 +10,7 @@
 import sqlite3
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from . import db
 from .models import Book, BookList
@@ -77,9 +77,8 @@ def replace_book(slug: str, book: Book, conn: Conn) -> Book:
 
 
 @router.delete("/{slug}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_book(slug: str, conn: Conn) -> Response:
+def delete_book(slug: str, conn: Conn) -> None:
     with conn:
         found = db.delete(conn, slug)
     if not found:
         raise _not_found(slug)
-    return Response(status_code=status.HTTP_204_NO_CONTENT)

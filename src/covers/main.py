@@ -56,21 +56,24 @@ app = FastAPI(
 #: read-only API: `POST /generate` spends real money on image generation, so a
 #: wildcard would let any page you happen to visit bill your OpenAI account.
 #: Set COVERS_CORS_ORIGINS to a comma-separated list, or "*" to allow all.
-_CORS_ORIGINS = os.environ.get("COVERS_CORS_ORIGINS", "").strip()
 _LOCALHOST = r"http://(localhost|127\.0\.0\.1)(:\d+)?"
 
-if _CORS_ORIGINS == "*":
-    _cors = {"allow_origins": ["*"]}
-elif _CORS_ORIGINS:
-    _cors = {"allow_origins": [o.strip() for o in _CORS_ORIGINS.split(",") if o.strip()]}
-else:
-    _cors = {"allow_origin_regex": _LOCALHOST}
+
+def cors_origins() -> dict:
+    """CORSMiddleware origin kwargs for this policy; callers choose the methods."""
+    origins = os.environ.get("COVERS_CORS_ORIGINS", "").strip()
+    if origins == "*":
+        return {"allow_origins": ["*"]}
+    if origins:
+        return {"allow_origins": [o.strip() for o in origins.split(",") if o.strip()]}
+    return {"allow_origin_regex": _LOCALHOST}
+
 
 app.add_middleware(
     CORSMiddleware,
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["Content-Type"],
-    **_cors,
+    **cors_origins(),
 )
 
 

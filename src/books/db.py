@@ -15,12 +15,8 @@ from .models import Book
 
 SEED = Path(__file__).with_name("seed.json")
 
-_SCALARS = (
-    "slug", "isbn", "title", "subtitle", "author", "publisher", "url",
-    "category", "price", "pages", "format", "blurb",
-)
+_COLUMNS = tuple(Book.model_fields)
 _JSON = ("original_cover", "generated_covers")
-_COLUMNS = _SCALARS + _JSON
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS books (
@@ -55,6 +51,8 @@ def connect(path: Path | None = None) -> sqlite3.Connection:
     # FastAPI runs sync dependencies and endpoints on different threadpool threads.
     conn = sqlite3.connect(path or db_path(), check_same_thread=False)
     conn.row_factory = sqlite3.Row
+    # LIKE is case-insensitive for ASCII only, so search folds in Python for umlauts.
+    conn.create_function("fold", 1, str.casefold, deterministic=True)
     return conn
 
 
@@ -94,7 +92,7 @@ def _values(book: Book) -> dict:
 
 
 def _book(row: sqlite3.Row) -> Book:
-    data = {key: row[key] for key in _SCALARS}
+    data = dict(row)  # created_at/updated_at are ignored by the model
     for key in _JSON:
         data[key] = json.loads(row[key])
     return Book.model_validate(data)
@@ -116,16 +114,14 @@ def list_books(
             clauses.append(f"{column} = ?")
             params.append(value)
     if q:
-        # LIKE is case-insensitive for ASCII only, so fold in Python for umlauts.
-        clauses.append("(pyfold(title) LIKE ? OR pyfold(author) LIKE ? OR pyfold(subtitle) LIKE ?)")
+        clauses.append("(fold(title) LIKE ? OR fold(author) LIKE ? OR fold(subtitle) LIKE ?)")
         like = f"%{q.casefold()}%"
         params += [like, like, like]
-        conn.create_function("pyfold", 1, lambda s: s.casefold(), deterministic=True)
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
 
     total = conn.execute(f"SELECT COUNT(*) FROM books {where}", params).fetchone()[0]
     rows = conn.execute(
-        f"SELECT * FROM books {where} ORDER BY created_at, rowid LIMIT ? OFFSET ?",
+        f"SELECT * FROM books {where} ORDER BY rowid LIMIT ? OFFSET ?",
         [*params, limit, offset],
     ).fetchall()
     return [_book(r) for r in rows], total

@@ -426,7 +426,16 @@ def test_genre_guess_defaults_to_roman():
 # --- CORS ---
 
 
-def _preflight(origin: str):
+@pytest.fixture(params=["covers", "bookworm"])
+def cors_client(request):
+    if request.param == "covers":
+        return client
+    from bookworm.main import app as bookworm_app
+
+    return TestClient(bookworm_app)
+
+
+def _preflight(client, origin: str):
     return client.options(
         "/generate",
         headers={
@@ -441,8 +450,8 @@ def _preflight(origin: str):
     "origin",
     ["http://localhost:5173", "http://127.0.0.1:8080", "http://localhost"],
 )
-def test_browser_front_end_on_localhost_is_allowed(origin):
-    response = _preflight(origin)
+def test_browser_front_end_on_localhost_is_allowed(cors_client, origin):
+    response = _preflight(cors_client, origin)
     assert response.status_code == 200
     assert response.headers["access-control-allow-origin"] == origin
 
@@ -451,14 +460,14 @@ def test_browser_front_end_on_localhost_is_allowed(origin):
     "origin",
     ["https://evil.example.com", "http://localhost.evil.com", "https://localhost:5173"],
 )
-def test_other_origins_are_refused(origin):
+def test_other_origins_are_refused(cors_client, origin):
     """POST /generate spends money on image generation.
 
     A wildcard would let any page the user visits bill their OpenAI account, so
     the default has to stay narrow. Note https://localhost is refused too: the
     default regex is http-only, which is what a dev front end uses.
     """
-    response = _preflight(origin)
+    response = _preflight(cors_client, origin)
     assert response.headers.get("access-control-allow-origin") is None
 
 
