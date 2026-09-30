@@ -7,6 +7,7 @@ connects the books API to MongoDB. ``books`` and ``covers`` stay libraries; the 
 for books (:mod:`bookworm.book_covers`) are the one place they meet.
 """
 
+import asyncio
 import logging
 from collections.abc import Callable
 from contextlib import asynccontextmanager
@@ -21,6 +22,7 @@ import books
 import covers.api
 from books import db as books_db
 from covers import settings as covers_settings
+from covers.typography import check_fonts
 
 from . import book_covers, cover_store
 
@@ -30,6 +32,9 @@ def create_app(client_factory: Callable[[], MongoClient] = books_db.connect) -> 
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        # Every typeface loads now, or the app does not boot: a missing face must
+        # not surface mid-render, after an image has been paid for.
+        await asyncio.to_thread(check_fonts)
         client = client_factory()
         app.state.books = books_db.init(client)
         app.state.covers, app.state.cover_images = cover_store.init(app.state.books.database)

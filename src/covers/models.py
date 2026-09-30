@@ -4,11 +4,10 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from .artdirection import MOTIFS, STYLES, TEMPLATES, Artwork
+from .artdirection import STYLES, Artwork, Motif, Template, TypeFamily
 from .formats import DEFAULT_FORMAT, FORMATS
 from .imagegen import Quality, Treatment
 from .palettes import PALETTE_KEYS
-from .typography import TYPE_FAMILIES
 
 FormatKey = Literal[tuple(FORMATS)]  # type: ignore[valid-type]
 
@@ -33,11 +32,11 @@ class CoverRequest(BaseModel):
     )
 
     # --- art-direction overrides -------------------------------------------
-    template: Literal[TEMPLATES] | None = None  # type: ignore[valid-type]
-    type_family: Literal[TYPE_FAMILIES] | None = None  # type: ignore[valid-type]
+    template: Template | None = None
+    type_family: TypeFamily | None = None
     palette: Literal[PALETTE_KEYS] | None = None  # type: ignore[valid-type]
     artwork: Artwork | None = None
-    motif: Literal[MOTIFS] | None = None  # type: ignore[valid-type]
+    motif: Motif | None = None
     genre_line: str | None = Field(
         default=None, description='Gattungsbezeichnung, e.g. "Roman".'
     )

@@ -217,9 +217,12 @@ load time.
 | `meta` | — | Fira Sans, Spiekermann's open successor to FF Meta |
 
 So a cover made on a Mac and the same cover from the deployed service differ in
-face, though not in layout. The licences are next to the fonts (`OFL-*.txt`). The
-pipeline resolves the face before calling the image model, so a font problem never
-costs an image.
+face, and with it in line breaks and type size, since both are fitted to the
+face's metrics. Set `COVERS_SYSTEM_FONTS=0` to render with the bundled faces only
+and see what a deploy will produce. The licences are next to the fonts
+(`OFL-*.txt`). Every face is loaded when the app starts, and a missing one stops
+it from booting, so a font problem never surfaces mid-render after an image has
+been paid for.
 
 ## Layouts
 

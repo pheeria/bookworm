@@ -82,14 +82,10 @@ def test_umlaut_opens_the_leading():
 
 @pytest.fixture
 def bundled_fonts_only(monkeypatch):
-    """The typeface search path of a server: no macOS faces, only src/covers/fonts."""
-    import os
-
+    """What a server has: no macOS faces, only the bundled ones."""
     from covers import typography
 
-    monkeypatch.setattr(
-        typography, "_FONT_DIRS", (os.path.join(os.path.dirname(typography.__file__), "fonts"),)
-    )
+    monkeypatch.setenv("COVERS_SYSTEM_FONTS", "0")
     typography.face.cache_clear()
     yield
     typography.face.cache_clear()
@@ -100,12 +96,19 @@ def bundled_fonts_only(monkeypatch):
 def test_every_family_has_its_own_open_face(bundled_fonts_only, family, weight):
     """A deploy has no Futura or Didot; each family must still resolve to its own
     bundled face rather than silently borrowing another family's."""
-    from covers.typography import FAMILIES, _find
+    from covers.typography import BUNDLED_DIR, FAMILIES, _find
 
-    assert any(_find(spec.file) for spec in FAMILIES[family][weight])
+    found = [_find(spec.file) for spec in FAMILIES[family][weight]]
+    assert any(p and p.startswith(BUNDLED_DIR) for p in found)
     f = face(family, weight)
     for text in ("Die Übersetzerin", "STRASSE ÄÖÜ", "»Märchen« – 1999"):
         assert f.measure(text) > 0 and f.run(text, 10.0).startswith("<path")
+
+
+def test_all_faces_load_at_startup(bundled_fonts_only):
+    from covers.typography import check_fonts
+
+    check_fonts()  # raises MissingFontError, which fails the app's lifespan
 
 
 def test_variable_faces_use_the_requested_instance(bundled_fonts_only):
@@ -193,34 +196,14 @@ def test_front_canvas_is_the_trim_plus_bleed():
 
 
 def _path_y_range(d: str) -> tuple[float, float]:
-    """Vertical extent of one SVG path, honouring H/V shorthands.
+    """Vertical extent of one SVG path."""
+    from fontTools.pens.boundsPen import BoundsPen
+    from fontTools.svgLib.path import parse_path
 
-    SVGPathPen emits absolute M/L/C/Q/H/V/Z, so y values have to be picked out by
-    command rather than by taking every second number.
-    """
-    tokens = re.findall(r"[MLCQHVZmlcqhvz]|-?\d*\.?\d+(?:e-?\d+)?", d)
-    ys: list[float] = []
-    cmd = ""
-    args: list[float] = []
-
-    def flush() -> None:
-        if not args:
-            return
-        if cmd in "Hh":
-            return  # x only
-        if cmd in "Vv":
-            ys.extend(args)
-            return
-        ys.extend(args[1::2])  # y of each coordinate pair
-
-    for token in tokens:
-        if token[-1].isalpha():
-            flush()
-            cmd, args = token, []
-        else:
-            args.append(float(token))
-    flush()
-    return (min(ys), max(ys)) if ys else (0.0, 0.0)
+    pen = BoundsPen(None)
+    parse_path(d, pen)
+    _, y_min, _, y_max = pen.bounds
+    return y_min, y_max
 
 
 @pytest.mark.parametrize(

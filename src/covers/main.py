@@ -7,18 +7,29 @@ package does not have to. ``bookworm`` includes :data:`covers.api.router`
 instead and never imports this.
 """
 
+import asyncio
 import logging
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import settings
 from .api import cors_origins, router
+from .typography import check_fonts
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    # Fail to boot rather than after an image has been paid for.
+    await asyncio.to_thread(check_fonts)
+    yield
 
 
 def create_app() -> FastAPI:
     logging.basicConfig(level=settings.log_level())
     app = FastAPI(
+        lifespan=lifespan,
         title="covers",
         version="0.1.0",
         summary="Print-ready front covers in German trade formats, from a text prompt.",

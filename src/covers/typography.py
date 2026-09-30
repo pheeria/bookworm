@@ -9,30 +9,31 @@ output carries no font dependency, which is what a repro house wants.
 import logging
 import os
 from dataclasses import dataclass
-from functools import cache, lru_cache
+from functools import cache
 
 import uharfbuzz as hb
 from fontTools.misc.transform import Transform
 from fontTools.pens.svgPathPen import SVGPathPen
 from fontTools.pens.transformPen import TransformPen
-from fontTools.ttLib import TTFont
 
-# Several of the macOS system faces have minor table quirks that fontTools warns
-# about on every load. They are harmless and the warnings drown out real output.
+from . import settings
+
+# fontTools only draws the pens here, but some faces trip warnings in its table
+# code that are harmless and drown out real output.
 logging.getLogger("fontTools").setLevel(logging.ERROR)
 
-_FONT_DIRS = (
+BUNDLED_DIR = os.path.join(os.path.dirname(__file__), "fonts")
+_MAC_DIRS = (
     "/System/Library/Fonts",
     "/System/Library/Fonts/Supplemental",
     "/Library/Fonts",
     os.path.expanduser("~/Library/Fonts"),
-    "/usr/share/fonts/truetype",
-    os.path.join(os.path.dirname(__file__), "fonts"),
 )
 
 
 def _find(basename: str) -> str | None:
-    for d in _FONT_DIRS:
+    dirs = (*_MAC_DIRS, BUNDLED_DIR) if settings.system_fonts() else (BUNDLED_DIR,)
+    for d in dirs:
         p = os.path.join(d, basename)
         if os.path.isfile(p):
             return p
@@ -55,7 +56,8 @@ def _v(file: str, **axes: float) -> FontSpec:
 
 # Bundled faces, all SIL Open Font License (see fonts/OFL-*.txt). The Mac faces
 # below are licensed for the machine they ship on, not for a server, so each
-# family falls back to an open face of the same register when they are absent.
+# family has an open face of the same register for when they are absent -- or
+# switched off with COVERS_SYSTEM_FONTS=0, to see what a deploy will render.
 _JOST, _JOST_I = "Jost[wght].ttf", "Jost-Italic[wght].ttf"
 _ARCHIVO, _ARCHIVO_I = "Archivo[wdth,wght].ttf", "Archivo-Italic[wdth,wght].ttf"
 _NUNITO, _NUNITO_I = (
@@ -69,10 +71,17 @@ _GARAMOND, _GARAMOND_I = "EBGaramond[wght].ttf", "EBGaramond-Italic[wght].ttf"
 
 
 # Logical families, each weight an ordered list of faces to try. The macOS faces
-# come first where they exist: Futura, Palatino and Optima are the German-
-# publishing workhorses; Didot and Bodoni cover the neoclassical register that
-# Insel and Manesse live in. The last three families are open faces in their own
+# come first where they exist: Futura and Optima are German-publishing
+# workhorses; Didot and Bodoni cover the neoclassical register that Insel and
+# Manesse live in. The last three families are open faces in their own
 # right, chosen because German publishing actually sets in them.
+_GARALDE = {  # EB Garamond -- the Garamond/Sabon of Suhrkamp, Insel and Hanser
+    "display": (_v(_GARAMOND, wght=600),),
+    "bold": (_v(_GARAMOND, wght=700),),
+    "regular": (_v(_GARAMOND, wght=400),),
+    "italic": (_v(_GARAMOND_I, wght=400),),
+}
+
 FAMILIES: dict[str, dict[str, tuple[FontSpec, ...]]] = {
     "geometric": {  # Futura -- rororo, KiWi, Fischer; open: Jost
         "display": (FontSpec("Futura.ttc", 4), _v(_JOST, wght=800)),  # Condensed ExtraBold
@@ -124,19 +133,13 @@ FAMILIES: dict[str, dict[str, tuple[FontSpec, ...]]] = {
         "regular": (FontSpec("SuperClarendon.ttc", 0), FontSpec("ZillaSlab-Regular.ttf")),
         "italic": (FontSpec("SuperClarendon.ttc", 1), FontSpec("ZillaSlab-Italic.ttf")),
     },
-    "garalde": {  # EB Garamond -- the Garamond/Sabon of Suhrkamp, Insel and Hanser
-        "display": (_v(_GARAMOND, wght=600),),
-        "bold": (_v(_GARAMOND, wght=700),),
-        "regular": (_v(_GARAMOND, wght=400),),
-        "italic": (_v(_GARAMOND_I, wght=400),),
-    },
+    "garalde": _GARALDE,
     # Only the title is blackletter; author and imprint lines, set in tracked
-    # capitals, would be unreadable in it, so they fall to Garamond.
-    "fraktur": {  # UnifrakturMaguntia titles over Garamond, for Märchen and the historical
+    # capitals, would be unreadable in it, so they stay in Garamond.
+    "fraktur": {  # UnifrakturMaguntia titles, for Märchen and the historical
+        **_GARALDE,
         "display": (FontSpec("UnifrakturMaguntia-Book.ttf"),),
         "bold": (_v(_GARAMOND, wght=600),),
-        "regular": (_v(_GARAMOND, wght=400),),
-        "italic": (_v(_GARAMOND_I, wght=400),),
     },
     "meta": {  # Fira Sans -- Erik Spiekermann's open successor to FF Meta
         "display": (FontSpec("FiraSans-Black.ttf"),),
@@ -146,21 +149,6 @@ FAMILIES: dict[str, dict[str, tuple[FontSpec, ...]]] = {
     },
 }
 
-#: Tried in order when a requested family has no usable face on this machine.
-FAMILY_FALLBACK = (
-    "geometric",
-    "grotesk",
-    "grotesk_condensed",
-    "humanist",
-    "literary_serif",
-    "garalde",
-    "neoclassical",
-    "didone",
-    "slab",
-    "meta",
-    "fraktur",
-)
-
 TYPE_FAMILIES = tuple(FAMILIES)
 
 
@@ -169,47 +157,33 @@ class MissingFontError(RuntimeError):
 
 
 class Face:
-    def __init__(self, path: str, index: int, axes: tuple[tuple[str, float], ...] = ()) -> None:
-        blob = hb.Blob.from_file_path(path)
-        self._hb_face = hb.Face(blob, index)
-        self._hb_font = hb.Font(self._hb_face)
-        self.upem: int = self._hb_face.upem
-        self._tt = TTFont(path, fontNumber=index, lazy=True)
-        # Shaping (advances) and outlines must agree on the instance.
-        location = dict(axes) or None
-        if location:
-            self._hb_font.set_variations(location)
-        self._glyphset = self._tt.getGlyphSet(location=location)
-        self._order = self._tt.getGlyphOrder()
-        os2 = self._tt["OS/2"] if "OS/2" in self._tt else None
-        cap = getattr(os2, "sCapHeight", 0) or 0
-        self.cap_height = (cap / self.upem) if cap else self._measured_cap_height()
+    """One face at one instance, all through HarfBuzz: shaping, metrics, outlines.
 
-    def _measured_cap_height(self) -> float:
-        try:
-            glyf = self._tt["glyf"]
-            g = glyf["H"]
-            return (g.yMax or 0) / self.upem
-        except Exception:
-            return 0.7
+    One engine for all three means advances and outlines can never disagree about
+    a variable font's instance.
+    """
 
-    def shape(self, text: str) -> list[tuple[str, float, float, float]]:
-        """Shape ``text`` into ``(glyph_name, x_advance, x_offset, y_offset)`` in em units."""
+    def __init__(self, hb_face: hb.Face, axes: tuple[tuple[str, float], ...] = ()) -> None:
+        self._hb_font = hb.Font(hb_face)
+        if axes:
+            self._hb_font.set_variations(dict(axes))
+        self.upem: int = hb_face.upem
+        self.cap_height = (
+            self._hb_font.get_metric_position_with_fallback(hb.OTMetricsTag.CAP_HEIGHT)
+            / self.upem
+        )
+
+    def shape(self, text: str) -> list[tuple[int, float, float, float]]:
+        """Shape ``text`` into ``(glyph_id, x_advance, x_offset, y_offset)`` in em units."""
         buf = hb.Buffer()
         buf.add_str(text)
         buf.guess_segment_properties()
         hb.shape(self._hb_font, buf)
-        out = []
-        for info, pos in zip(buf.glyph_infos, buf.glyph_positions):
-            out.append(
-                (
-                    self._order[info.codepoint],
-                    pos.x_advance / self.upem,
-                    pos.x_offset / self.upem,
-                    pos.y_offset / self.upem,
-                )
-            )
-        return out
+        return [
+            (info.codepoint, pos.x_advance / self.upem, pos.x_offset / self.upem,
+             pos.y_offset / self.upem)
+            for info, pos in zip(buf.glyph_infos, buf.glyph_positions)
+        ]
 
     def measure(self, text: str, tracking: float = 0.0) -> float:
         """Advance width of ``text`` in em units, including letterspacing."""
@@ -230,44 +204,42 @@ class Face:
         y: float = 0.0,
     ) -> str:
         """Outline ``text`` as a single SVG path with its baseline on ``y``."""
-        pen = SVGPathPen(self._glyphset)
+        pen = SVGPathPen(None)
         # Outlines come back in font units, so the scale carries the 1/upem.
         unit = size / self.upem
         cursor = 0.0
-        for name, adv, xo, yo in self.shape(text):
+        for gid, adv, xo, yo in self.shape(text):
             t = Transform().translate(
                 x + (cursor + xo) * size, y - yo * size
             ).scale(unit, -unit)
-            self._glyphset[name].draw(TransformPen(pen, t))
+            self._hb_font.draw_glyph_with_pen(gid, TransformPen(pen, t))
             cursor += adv + tracking
         d = pen.getCommands()
         return f'<path d="{d}" fill="{fill}"/>' if d else ""
 
 
-@lru_cache(maxsize=64)
-def _face(path: str, index: int, axes: tuple[tuple[str, float], ...]) -> Face:
-    return Face(path, index, axes)
+@cache
+def _hb_face(path: str, index: int) -> hb.Face:
+    """Parsed once per file, however many weights are instanced from it."""
+    return hb.Face(hb.Blob.from_file_path(path), index)
 
 
-@lru_cache(maxsize=256)
+@cache
 def face(family: str, weight: str = "display") -> Face:
-    """Resolve a logical family and weight to a loaded face, with fallbacks."""
-    families = [family] + [f for f in FAMILY_FALLBACK if f != family]
-    candidates = (
-        spec
-        for fam in families
-        for w in (weight, "bold", "regular", "display")
-        for spec in FAMILIES.get(fam, {}).get(w, ())
-    )
-    for spec in candidates:
+    """The first of the family's faces for ``weight`` that is present."""
+    for spec in FAMILIES[family][weight]:
         if path := _find(spec.file):
-            try:
-                return _face(path, spec.index, spec.axes)
-            except Exception:
-                continue
+            return Face(_hb_face(path, spec.index), spec.axes)
     raise MissingFontError(
-        "no usable typeface found; the bundled faces in src/covers/fonts/ are missing"
+        f"no face for {family}/{weight}; the bundled fonts in {BUNDLED_DIR} are missing"
     )
+
+
+def check_fonts() -> None:
+    """Load every family and weight, so a missing face fails at startup, not mid-render."""
+    for family, weights in FAMILIES.items():
+        for weight in weights:
+            face(family, weight)
 
 
 # --------------------------------------------------------------------------- #
@@ -302,7 +274,7 @@ class TextBlock:
 
     @property
     def height(self) -> float:
-        """Visual height from cap line to last baseline."""
+        """First baseline to last; add the face's cap height for the visual height."""
         return (len(self.lines) - 1) * self.leading * self.size
 
     @property

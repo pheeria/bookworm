@@ -1,9 +1,9 @@
 """Art direction: turn a text prompt into a concrete cover brief.
 
 This is the judgement step -- palette, layout, typographic register, the German
-genre line, and the prompt the image model will render. It
-runs on Claude. Image generation itself lives in :mod:`covers.imagegen` and runs
-on OpenAI.
+genre line, and the prompt the image model will render. It runs on Claude here;
+:mod:`covers.director_openai` is the same brief from OpenAI. Image generation
+itself lives in :mod:`covers.imagegen`.
 
 If no Anthropic credentials are reachable, or the call fails, a deterministic
 brief is derived from a hash of the input so the endpoint still returns a cover.
@@ -106,9 +106,11 @@ class ArtDirection(BaseModel):
     )
     type_family: TypeFamily = Field(
         description=(
-            "geometric is Futura (the rororo/KiWi workhorse), grotesk is Helvetica Neue, "
-            "grotesk_condensed is a tall condensed sans, neoclassical is Didot, didone is "
-            "Bodoni, literary_serif is Baskerville, humanist is Optima, slab is a Clarendon. "
+            "Name the register, not a font file; each is set in the face named or its "
+            "open counterpart. geometric is Futura (the rororo/KiWi workhorse), grotesk "
+            "is Helvetica Neue, grotesk_condensed is a tall condensed sans, neoclassical "
+            "is Didot, didone is Bodoni, literary_serif is Baskerville, humanist is "
+            "Optima, slab is a Clarendon. "
             "garalde is Garamond, the classic literary-fiction face of Suhrkamp, Insel "
             "and Hanser. fraktur is blackletter for the title, for fairy tales, legends "
             "and historical subjects; never set it in capitals. meta is Spiekermann's "
@@ -434,12 +436,11 @@ def apply_overrides(
     if template:
         data["template"] = template
         # Each layout is drawn around a particular face; pinning the template
-        # without a typeface should move the typeface with it.
-        if not type_family:
-            data["type_family"] = TEMPLATE_DEFAULT_FAMILY.get(
-                template, data["type_family"]
-            )
-    if type_family:
+        # without a typeface moves the typeface with it.
+        data["type_family"] = type_family or TEMPLATE_DEFAULT_FAMILY.get(
+            template, data["type_family"]
+        )
+    elif type_family:
         data["type_family"] = type_family
     if artwork:
         data["artwork"] = artwork

@@ -368,7 +368,6 @@ def _front_type_block(ctx: Ctx) -> str:
     if total > available:
         shrink = available / total
         sizes = [s * shrink for s in sizes]
-        total = available
 
     y = author_base + m * 0.8
     for line, size in zip(lines, sizes):
@@ -696,7 +695,6 @@ def _trim_box(x: float, y: float, w: float, h: float) -> str:
 def _svg(width_mm: float, height_mm: float, body: str) -> str:
     return (
         f'<svg xmlns="http://www.w3.org/2000/svg" '
-        f'xmlns:xlink="http://www.w3.org/1999/xlink" '
         f'width="{_n(width_mm)}mm" height="{_n(height_mm)}mm" '
         f'viewBox="0 0 {_n(width_mm)} {_n(height_mm)}">{body}</svg>'
     )

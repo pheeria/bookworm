@@ -171,13 +171,7 @@ def _process(
 
 def cover_crop(img: Image.Image, target_w: int, target_h: int) -> Image.Image:
     """Scale and centre-crop to exactly ``target_w`` x ``target_h`` without distortion."""
-    src_w, src_h = img.size
-    scale = max(target_w / src_w, target_h / src_h)
-    new = (max(1, round(src_w * scale)), max(1, round(src_h * scale)))
-    resized = img.resize(new, Image.LANCZOS)
-    left = (new[0] - target_w) // 2
-    top = (new[1] - target_h) // 2
-    return resized.crop((left, top, left + target_w, top + target_h))
+    return ImageOps.fit(img, (target_w, target_h), Image.LANCZOS)
 
 
 def duotone(img: Image.Image, shadow_hex: str, highlight_hex: str) -> Image.Image:

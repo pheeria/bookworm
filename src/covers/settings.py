@@ -31,3 +31,8 @@ def output_dir() -> Path:
 
 def log_level() -> str:
     return os.environ.get("COVERS_LOG_LEVEL", "INFO")
+
+
+def system_fonts() -> bool:
+    """Prefer the macOS faces where installed. Off shows what a deploy renders."""
+    return os.environ.get("COVERS_SYSTEM_FONTS", "1").strip().lower() not in ("0", "false", "no")
