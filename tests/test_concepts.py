@@ -65,9 +65,11 @@ CONCEPTS = {
 
 
 PLACEMENT = {
-    "location": "diagonal", "align": "center", "size": "dominant", "angle": -24,
-    "title_ink": {"color": "#fff4d6", "gradient_to": "#f2b84b", "gradient": "down"},
-    "text_ink": {"color": "#fff4d6"},
+    "lettering": {
+        "location": "diagonal", "align": "center", "size": "dominant", "angle": -24,
+        "title_ink": {"color": "#fff4d6", "gradient_to": "#f2b84b", "gradient": "down"},
+        "text_ink": {"color": "#fff4d6"},
+    },
     "type_family": "garalde", "title_case": "title",
     "note": "Der Himmel oben ist unruhig; die Diagonale folgt dem Dachfirst.",
 }
@@ -272,12 +274,11 @@ def test_a_placement_is_held_to_the_mood():
     with pytest.raises(pydantic.ValidationError):
         schema.model_validate({**PLACEMENT, "type_family": "slab"})
     with pytest.raises(pydantic.ValidationError):
-        schema.model_validate({**PLACEMENT, "angle": -60})
+        schema.model_validate({**PLACEMENT, "lettering": {**PLACEMENT["lettering"], "angle": -60}})
 
 
 def test_concepts_stored_before_lettering_still_load():
     old = {**CONCEPTS["concepts"][1], "type_zone": "bottom"}
     del old["lettering"]
-    schema = covers_concepts.concepts_schema(MOODS["heart"])
-    parsed = schema.model_validate({**CONCEPTS, "concepts": [old]})
+    parsed = covers_concepts.load_concepts(MOODS["heart"], {**CONCEPTS, "concepts": [old]})
     assert parsed.concepts[0].lettering.location == "bottom"

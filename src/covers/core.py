@@ -142,6 +142,33 @@ def client():
         return None
 
 
+async def parse[T: BaseModel](
+    schema: type[T], *, system: str, content: str | list, what: str, max_tokens: int = 16000
+) -> T | None:
+    """One structured-output call to Claude; None without credentials, on an API
+    error or a refusal, so every caller can fall back."""
+    import anthropic
+
+    if (claude := client()) is None:
+        return None
+    try:
+        response = await claude.messages.parse(
+            model=settings.claude_model(),
+            max_tokens=max_tokens,
+            system=system,
+            thinking={"type": "adaptive"},
+            messages=[{"role": "user", "content": content}],
+            output_format=schema,
+        )
+    # Unresolvable credentials surface here, as a TypeError, not at construction.
+    except (anthropic.APIError, TypeError, ValueError) as exc:
+        log.warning("%s failed (%s)", what, exc)
+        return None
+    if response.stop_reason == "refusal":
+        return None
+    return response.parsed_output
+
+
 async def research(details: dict[str, str]) -> Research | None:
     """Notes on the book from Wikipedia and Goodreads, with the pages they came from."""
     import anthropic
@@ -189,27 +216,12 @@ async def write_core(
     details: dict[str, str], found: Research | None, *, publisher: str, imprint: str
 ) -> BookCore | None:
     """The Buchkern for one title, from its data and the research notes."""
-    import anthropic
-
-    if (claude := client()) is None:
-        return None
     content = f"Titeldaten:\n{_title_data(details)}"
     content += f"\n\nRecherche:\n{found.notes}" if found else "\n\nRecherche: keine Ergebnisse."
-    try:
-        response = await claude.messages.parse(
-            model=settings.claude_model(),
-            max_tokens=16000,
-            system=_CORE_SYSTEM.format(publisher=publisher, imprint=imprint),
-            thinking={"type": "adaptive"},
-            messages=[{"role": "user", "content": content}],
-            output_format=BookCore,
-        )
-    except (anthropic.APIError, TypeError, ValueError) as exc:
-        log.warning("book core failed (%s)", exc)
-        return None
-    if response.stop_reason == "refusal":
-        return None
-    return response.parsed_output
+    return await parse(
+        BookCore, system=_CORE_SYSTEM.format(publisher=publisher, imprint=imprint),
+        content=content, what="book core",
+    )
 
 
 def enabled() -> bool:

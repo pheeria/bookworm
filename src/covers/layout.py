@@ -9,9 +9,11 @@ eye aligns to at display sizes.
 """
 
 import math
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from functools import cached_property
 from typing import Any
+
+from PIL import ImageOps
 
 from . import motifs
 from .artdirection import ArtDirection
@@ -54,6 +56,13 @@ class Ctx:
     @property
     def margin(self) -> float:
         return margin(self.geo)
+
+    @cached_property
+    def artwork_sample(self) -> Any:
+        """A small RGB copy of the artwork: averaging the colour under the type needs no more."""
+        if self.artwork_image is None:
+            return None
+        return ImageOps.contain(self.artwork_image, (_SAMPLE_PX, _SAMPLE_PX)).convert("RGB")
 
 
 Rect = tuple[float, float, float, float]
@@ -673,11 +682,13 @@ def _front_illustrated_full(ctx: Ctx) -> str:
 
 #: Light and dark type for a picture the palette's ink does not read on.
 _LIGHT, _DARK = "#fbf8f3", "#161412"
+#: The long edge of the artwork copy the type's colours are sampled from.
+_SAMPLE_PX = 256
 
 
 def _ground_under(ctx: Ctx, rect: Rect) -> str:
     """The average colour of the artwork under ``rect`` (mm), or the palette's ground."""
-    img, plan = ctx.artwork_image, artwork_plan(ctx.direction, ctx.geo)
+    img, plan = ctx.artwork_sample, artwork_plan(ctx.direction, ctx.geo)
     if img is None or plan is None:
         return ctx.palette.ground
     px, py, pw, ph = plan
@@ -685,11 +696,11 @@ def _ground_under(ctx: Ctx, rect: Rect) -> str:
     sx, sy = img.width / pw, img.height / ph
     box = (
         max(0, int((x - px) * sx)), max(0, int((y - py) * sy)),
-        min(img.width, int((x + w - px) * sx)), min(img.height, int((y + h - py) * sy)),
+        min(img.width, math.ceil((x + w - px) * sx)), min(img.height, math.ceil((y + h - py) * sy)),
     )
     if box[2] <= box[0] or box[3] <= box[1]:
         return ctx.palette.ground
-    r, g, b = img.crop(box).convert("RGB").resize((1, 1), 4).getpixel((0, 0))  # 4: BOX
+    r, g, b = img.crop(box).resize((1, 1), 4).getpixel((0, 0))  # 4: BOX
     return f"#{r:02x}{g:02x}{b:02x}"
 
 
@@ -708,7 +719,8 @@ def _paint(ink: Ink, ground: str, box: Rect, uid: str) -> tuple[str, str]:
     reads the brighter end; where either would not read, the type falls back to one
     colour that does.
     """
-    if not ink.gradient_to or any(_ink_on(ground, c, 0.28) != c for c in ink.stops):
+    stops = (ink.color, ink.gradient_to)
+    if not ink.gradient_to or any(_ink_on(ground, c, 0.28) != c for c in stops):
         return "", _ink_on(ground, ink.color)
     x, y, w, h = box
     x2, y2 = {"down": (x, y + h), "across": (x + w, y), "diagonal": (x + w, y + h)}[ink.gradient]
@@ -725,6 +737,8 @@ def _paint(ink: Ink, ground: str, box: Rect, uid: str) -> tuple[str, str]:
 _TITLE_SHARE = {"small": 0.14, "medium": 0.2, "large": 0.28, "dominant": 0.38}
 #: A left or right column's share of the measure.
 _COLUMN = 0.46
+#: Tracking and weight of the author and genre lines.
+_AUTHOR, _GENRE = (0.08, "bold"), (0.06, "italic")
 
 
 def _label_size(text: str, family: str, size: float, measure: float, tracking: float, weight: str) -> float:
@@ -743,58 +757,61 @@ def _front_picture(ctx: Ctx) -> str:
     and give way to light or dark type where they would not read. The imprint sits
     small at the foot, as on the house covers.
     """
-    g, d, c = ctx.geo, ctx.direction, ctx.content
-    lt = d.lettering
+    g, d, c, lt = ctx.geo, ctx.direction, ctx.content, ctx.direction.lettering
     b, pw, ph, m = g.bleed_mm, g.panel_w_mm, g.panel_h_mm, ctx.margin
     fam = d.type_family
+    title_ink, text_ink = lt.title_ink or Ink(color=d.ink), lt.text_ink or Ink(color=d.ink)
+    column = lt.location in ("left", "right")
+    measure = (pw - 2 * m) * (_COLUMN if column else 1)
+    align = lt.location if column else "center" if lt.location == "diagonal" else lt.align
+    x = {"left": b + m, "center": b + pw / 2, "right": b + pw - m}[align]
+    left = x - {"left": 0, "center": measure / 2, "right": measure}[align]
+    author_size = _label_size(c.author, fam, pw * 0.046, measure, *_AUTHOR)
+    genre_size = _label_size(c.genre_line, fam, pw * 0.032, measure, *_GENRE)
+    imprint_size = pw * 0.024
+    imprint_top = b + ph - m * 0.9 - imprint_size
+    title_text, share = cased(c.title, d.title_case), _TITLE_SHARE[lt.size]
     out = [_artwork_or_motif(ctx, artwork_plan(d, g))]
 
-    author_size, genre_size, imprint_size = pw * 0.046, pw * 0.032, pw * 0.024
-    imprint_top = b + ph - m * 0.9 - imprint_size
-    share = _TITLE_SHARE[lt.size]
-    title_text = cased(c.title, d.title_case)
-    cap = face(fam, "display").cap_height
+    def label(text: str, size: float, top: float, fill: str, style: tuple[float, str]) -> float:
+        frag, base = draw_label(text, fam, size, x=x, cap_top=top, align=align, fill=fill,
+                                tracking=style[0], weight=style[1])
+        out.append(frag)
+        return base
 
     if lt.location == "diagonal":
-        out.append(_diagonal(ctx, title_text, share, author_size, genre_size, imprint_top))
+        author_top, genre_top = b + m * 1.1, imprint_top - m * 0.8 - genre_size
+        for text, size, top, style in (
+            (c.author, author_size, author_top, _AUTHOR), (c.genre_line, genre_size, genre_top, _GENRE),
+        ):
+            area = (b, top - m * 0.3, pw, size + m * 0.6)
+            defs, fill = _paint(text_ink, _ground_under(ctx, area), area, f"{style[1]}-ink")
+            out.append(defs)
+            label(text, size, top, fill, style)
+        band = (author_top + author_size * 2.2, genre_top - genre_size * 1.2)
+        out.append(_diagonal_title(ctx, title_text, share, band, title_ink))
     else:
-        column = lt.location in ("left", "right")
-        measure = (pw - 2 * m) * (_COLUMN if column else 1)
-        align = {"left": "left", "right": "right"}.get(lt.location, lt.align)
         title = fit_display(
             title_text, fam, max_width=measure,
             max_height=ph * share * (1.4 if column else 1), max_lines=5 if column else 3,
             leading=0.98, tracking=-0.01,
         )
-        author_size = _label_size(c.author, fam, author_size, measure, 0.08, "bold")
-        genre_size = _label_size(c.genre_line, fam, genre_size, measure, 0.06, "italic")
-        stack_h = author_size * 1.9 + title.height + cap * title.size + genre_size * 2.2
+        title_h = title.height + face(fam, "display").cap_height * title.size
+        stack_h = author_size * 1.9 + title_h + genre_size * 2.2
         top = imprint_top - m * 1.4 - stack_h if lt.location == "bottom" else b + m * 1.1
-        x = {"left": b + m, "center": b + pw / 2, "right": b + pw - m}[align]
-        left = x - {"left": 0, "center": measure / 2, "right": measure}[align]
         area = (left - m * 0.4, top - m * 0.4, measure + m * 0.8, stack_h + m * 0.8)
         ground = _ground_under(ctx, area)
-        text_defs, text_fill = _paint(lt.text_ink, ground, area, "text-ink")
-
-        frag, author_base = draw_label(
-            c.author, fam, author_size, x=x, cap_top=top, align=align,
-            fill=text_fill, tracking=0.08, weight="bold",
-        )
-        title_top = author_base + author_size * 0.9
-        title_box = (left, title_top, measure, title.height + cap * title.size)
-        title_defs, title_fill = _paint(lt.title_ink, ground, title_box, "title-ink")
-        out += [text_defs, title_defs, frag]
+        text_defs, text_fill = _paint(text_ink, ground, area, "text-ink")
+        out.append(text_defs)
+        title_top = label(c.author, author_size, top, text_fill, _AUTHOR) + author_size * 0.9
+        title_defs, title_fill = _paint(title_ink, ground, (left, title_top, measure, title_h), "title-ink")
         frag, title_base = draw_block(title, fam, x=x, cap_top=title_top, align=align, fill=title_fill)
-        out.append(frag)
-        frag, _ = draw_label(
-            c.genre_line, fam, genre_size, x=x, cap_top=title_base + genre_size * 1.2,
-            align=align, fill=text_fill, tracking=0.06, weight="italic",
-        )
-        out.append(frag)
+        out += [title_defs, frag]
+        label(c.genre_line, genre_size, title_base + genre_size * 1.2, text_fill, _GENRE)
 
     imprint_ink = _ink_on(
         _ground_under(ctx, (0, imprint_top - m * 0.3, g.front_bleed_w_mm, imprint_size + m * 0.6)),
-        lt.text_ink.color,
+        text_ink.color,
     )
     frag, _ = draw_label(
         c.imprint.upper(), fam, imprint_size, x=b + pw / 2, cap_top=imprint_top,
@@ -804,52 +821,31 @@ def _front_picture(ctx: Ctx) -> str:
     return "".join(out)
 
 
-def _diagonal(
-    ctx: Ctx, title_text: str, share: float, author_size: float, genre_size: float, imprint_top: float
-) -> str:
-    """The title on a rising baseline through the middle; author above and genre
-    below it, horizontal and centred."""
-    g, d, c, lt = ctx.geo, ctx.direction, ctx.content, ctx.direction.lettering
-    b, pw, m = g.bleed_mm, g.panel_w_mm, ctx.margin
-    fam, centre, measure = d.type_family, b + pw / 2, pw - 2 * m
-    cap = face(fam, "display").cap_height
-
-    author_size = _label_size(c.author, fam, author_size, measure, 0.08, "bold")
-    genre_size = _label_size(c.genre_line, fam, genre_size, measure, 0.06, "italic")
-    author_top = b + m * 1.1
-    genre_top = imprint_top - m * 0.8 - genre_size
-    # The band the rotated title may fill, between the author and the genre line.
-    band_top, band_bottom = author_top + author_size * 2.2, genre_top - genre_size * 1.2
-    theta = math.radians(-lt.angle)
+def _diagonal_title(ctx: Ctx, text: str, share: float, band: tuple[float, float], ink: Ink) -> str:
+    """The title on a rising baseline, centred in the ``band`` (top, bottom) between
+    the author and the genre line."""
+    g, d = ctx.geo, ctx.direction
+    fam, centre, measure = d.type_family, g.bleed_mm + g.panel_w_mm / 2, g.panel_w_mm - 2 * ctx.margin
+    theta = math.radians(-d.lettering.angle)
     cos, sin = math.cos(theta), math.sin(theta)
 
-    max_w, max_h = measure / cos, g.panel_h_mm * share
-    for _ in range(4):
-        title = fit_display(title_text, fam, max_width=max_w, max_height=max_h, max_lines=3,
-                            leading=0.98, tracking=-0.01)
-        w, h = max(title.widths, default=0), title.height + cap * title.size
-        # The rotated block's bounding box has to fit the measure and the band.
-        k = min(measure / (w * cos + h * sin or 1), (band_bottom - band_top) / (w * sin + h * cos or 1))
-        if k >= 1:
-            break
-        max_w, max_h = max_w * k, max_h * k
-    cy = (band_top + band_bottom) / 2
+    title = fit_display(text, fam, max_width=measure / cos, max_height=g.panel_h_mm * share,
+                        max_lines=3, leading=0.98, tracking=-0.01)
+    w = max(title.widths, default=0)
+    h = title.height + face(fam, "display").cap_height * title.size
     bw, bh = w * cos + h * sin, w * sin + h * cos
-    ground = _ground_under(ctx, (centre - bw / 2, cy - bh / 2, bw, bh))
-    title_defs, title_fill = _paint(lt.title_ink, ground, (centre - w / 2, cy - h / 2, w, h), "title-ink")
-    block, _ = draw_block(title, fam, x=centre, cap_top=cy - h / 2, align="center", fill=title_fill)
-    out = [title_defs, f'<g transform="rotate({lt.angle} {_n(centre)} {_n(cy)})">{block}</g>']
+    # Fitted along the baseline; scaled down where the rotated block would overrun
+    # the measure or the band. Line breaks hold, since everything scales with size.
+    k = min(1, measure / (bw or 1), (band[1] - band[0]) / (bh or 1))
+    if k < 1:
+        title = replace(title, size=title.size * k, widths=[v * k for v in title.widths])
+        w, h, bw, bh = w * k, h * k, bw * k, bh * k
 
-    for text, size, top, tracking, weight in (
-        (c.author, author_size, author_top, 0.08, "bold"),
-        (c.genre_line, genre_size, genre_top, 0.06, "italic"),
-    ):
-        area = (b, top - m * 0.3, pw, size + m * 0.6)
-        fill = _ink_on(_ground_under(ctx, area), lt.text_ink.color)
-        frag, _ = draw_label(text, fam, size, x=centre, cap_top=top, align="center",
-                             fill=fill, tracking=tracking, weight=weight)
-        out.append(frag)
-    return "".join(out)
+    cy = (band[0] + band[1]) / 2
+    ground = _ground_under(ctx, (centre - bw / 2, cy - bh / 2, bw, bh))
+    defs, fill = _paint(ink, ground, (centre - w / 2, cy - h / 2, w, h), "title-ink")
+    block, _ = draw_block(title, fam, x=centre, cap_top=cy - h / 2, align="center", fill=fill)
+    return f'{defs}<g transform="rotate({d.lettering.angle} {_n(centre)} {_n(cy)})">{block}</g>'
 
 
 FRONT_TEMPLATES = {

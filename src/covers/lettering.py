@@ -14,22 +14,22 @@ Locations:
 """
 
 import asyncio
-import base64
-import io
-import logging
 from functools import cache
-from typing import Annotated, Literal
+from typing import TYPE_CHECKING, Annotated, Literal
 
+from PIL import ImageOps
 from pydantic import BaseModel, Field, create_model
 
-from . import settings
+from .core import parse
 from .palettes import HEX
-from .typography import TYPE_FAMILIES, describe
+from .typography import describe
 
-log = logging.getLogger("covers.lettering")
+if TYPE_CHECKING:
+    from .artdirection import ArtDirection
 
 Location = Literal["top", "bottom", "left", "right", "diagonal"]
 Hex = Annotated[str, Field(pattern=HEX)]
+TitleCase = Literal["upper", "title", "as_is"]
 
 #: The rising baseline of a diagonal title, in degrees (negative: rises to the right).
 MIN_ANGLE, MAX_ANGLE = -35, -12
@@ -47,10 +47,6 @@ class Ink(BaseModel):
     gradient: Literal["down", "across", "diagonal"] = Field(
         default="down", description="Gradient direction: down the lines, across them, or corner to corner."
     )
-
-    @property
-    def stops(self) -> tuple[str, ...]:
-        return (self.color, self.gradient_to) if self.gradient_to else (self.color,)
 
 
 class Lettering(BaseModel):
@@ -76,13 +72,13 @@ class Lettering(BaseModel):
         default=-20, ge=MIN_ANGLE, le=MAX_ANGLE,
         description=f"diagonal only: the title's baseline angle in degrees, {MIN_ANGLE} to {MAX_ANGLE}.",
     )
-    title_ink: Ink = Field(
-        default_factory=lambda: Ink(color="#161412"),
-        description="The title's colour. It must read on the picture where the title sits.",
+    title_ink: Ink | None = Field(
+        default=None,
+        description="The title's colour; it must read on the picture where the title sits. Null: the brief's ink.",
     )
-    text_ink: Ink = Field(
-        default_factory=lambda: Ink(color="#161412"),
-        description="Author and genre line; usually solid, and quieter than the title.",
+    text_ink: Ink | None = Field(
+        default=None,
+        description="Author and genre line; usually solid, and quieter than the title. Null: the brief's ink.",
     )
 
 
@@ -106,17 +102,18 @@ def zone_text(lettering: Lettering) -> str:
     )
 
 
-class Placement(Lettering):
-    """The lettering as Claude sets it after seeing the painted picture."""
+class Placement(BaseModel):
+    """The lettering and face as Claude sets them after seeing the painted picture."""
 
+    lettering: Lettering
     type_family: str
-    title_case: Literal["upper", "title", "as_is"]
+    title_case: TitleCase
     note: str = Field(description="One line: why the type sits there and reads in that colour.")
 
 
 @cache
-def placement_schema(families: tuple[str, ...] = TYPE_FAMILIES) -> type[Placement]:
-    """``Placement`` with the face narrowed to the reader type's families."""
+def placement_schema(families: tuple[str, ...]) -> type[Placement]:
+    """``Placement`` with the face narrowed to the families allowed."""
     return create_model(
         "Placement",
         __base__=Placement,
@@ -139,48 +136,32 @@ never set in capitals."""
 
 
 def _preview(image) -> str:
-    img = image.convert("RGB")
-    img.thumbnail((PREVIEW_PX, PREVIEW_PX))
-    buf = io.BytesIO()
-    img.save(buf, "JPEG", quality=85)
-    return base64.b64encode(buf.getvalue()).decode()
+    # Late: imagegen imports artdirection, which imports this module.
+    from .imagegen import to_data_uri
+
+    # Shrink first: the painted picture is print-size, Claude needs a glance.
+    small = ImageOps.contain(image, (PREVIEW_PX, PREVIEW_PX)).convert("RGB")
+    return to_data_uri(small, quality=85).removeprefix("data:image/jpeg;base64,")
 
 
 async def adjust(
-    image, planned: Lettering, *, title: str, author: str, genre: str,
-    type_family: str, title_case: str, families: tuple[str, ...] = TYPE_FAMILIES,
+    image, direction: "ArtDirection", *, title: str, author: str, families: tuple[str, ...]
 ) -> Placement | None:
-    """The lettering, confirmed or moved after a look at the picture; None if Claude
-    is unavailable, and the plan stands."""
-    import anthropic
-
-    from .core import client
-
-    if (claude := client()) is None:
-        return None
-    plan = {**planned.model_dump(), "type_family": type_family, "title_case": title_case}
+    """The brief's lettering and face, confirmed or moved after a look at the
+    picture, the face one of ``families``; None if Claude is unavailable, and the
+    plan stands."""
+    plan = direction.model_dump(include={"lettering", "type_family", "title_case"})
     text = (
-        f"Author: {author}\nTitle: {title}\nGenre line: {genre}\n\n"
+        f"Author: {author}\nTitle: {title}\nGenre line: {direction.genre_line}\n\n"
         f"The art director's plan:\n{plan}"
     )
-    try:
-        response = await claude.messages.parse(
-            model=settings.claude_model(),
-            max_tokens=8000,
-            system=_SYSTEM,
-            thinking={"type": "adaptive"},
-            messages=[{"role": "user", "content": [
-                {"type": "image", "source": {
-                    "type": "base64", "media_type": "image/jpeg",
-                    "data": await asyncio.to_thread(_preview, image),
-                }},
-                {"type": "text", "text": text},
-            ]}],
-            output_format=placement_schema(families),
-        )
-    except (anthropic.APIError, TypeError, ValueError) as exc:
-        log.warning("lettering adjustment failed (%s)", exc)
-        return None
-    if response.stop_reason == "refusal":
-        return None
-    return response.parsed_output
+    return await parse(
+        placement_schema(families), system=_SYSTEM, max_tokens=8000, what="lettering adjustment",
+        content=[
+            {"type": "image", "source": {
+                "type": "base64", "media_type": "image/jpeg",
+                "data": await asyncio.to_thread(_preview, image),
+            }},
+            {"type": "text", "text": text},
+        ],
+    )

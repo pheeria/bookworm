@@ -196,14 +196,19 @@ def test_front_canvas_is_the_trim_plus_bleed():
     assert f'height="{ctx.geo.front_bleed_h_mm:.3f}mm"' in svg
 
 
-def _path_y_range(d: str) -> tuple[float, float]:
-    """Vertical extent of one SVG path."""
+def _path_bounds(d: str) -> tuple[float, float, float, float]:
+    """``(x_min, y_min, x_max, y_max)`` of one SVG path."""
     from fontTools.pens.boundsPen import BoundsPen
     from fontTools.svgLib.path import parse_path
 
     pen = BoundsPen(None)
     parse_path(d, pen)
-    _, y_min, _, y_max = pen.bounds
+    return pen.bounds
+
+
+def _path_y_range(d: str) -> tuple[float, float]:
+    """Vertical extent of one SVG path."""
+    _, y_min, _, y_max = _path_bounds(d)
     return y_min, y_max
 
 
@@ -552,16 +557,6 @@ def test_the_picture_zone_moves_the_type():
     assert title_top("top") < title_top("bottom")
 
 
-def _path_x_range(d: str) -> tuple[float, float]:
-    from fontTools.pens.boundsPen import BoundsPen
-    from fontTools.svgLib.path import parse_path
-
-    pen = BoundsPen(None)
-    parse_path(d, pen)
-    x_min, _, x_max, _ = pen.bounds
-    return x_min, x_max
-
-
 @pytest.mark.parametrize("location", ["left", "right"])
 def test_a_side_column_keeps_the_type_on_its_side(location):
     ctx = _ctx(template="picture", artwork="none", title="Die Nacht der langen Schatten",
@@ -570,7 +565,7 @@ def test_a_side_column_keeps_the_type_on_its_side(location):
     middle = ctx.geo.bleed_mm + ctx.geo.panel_w_mm / 2
     # Author, title lines and genre; the imprint (last) stays centred at the foot.
     for d in re.findall(r'<path d="([^"]+)"', svg)[:-1]:
-        x_min, x_max = _path_x_range(d)
+        x_min, _, x_max, _ = _path_bounds(d)
         assert x_max < middle if location == "left" else x_min > middle
 
 

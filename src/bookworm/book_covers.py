@@ -370,7 +370,7 @@ async def _concept_brief(
         if written is None:
             return None
         concepts = written.model_dump()
-    parsed = covers_concepts.concepts_schema(mood).model_validate(concepts)
+    parsed = covers_concepts.load_concepts(mood, concepts)
     if index >= len(parsed.concepts):
         raise HTTPException(422, f"this cover has only {len(parsed.concepts)} concepts")
     fit = getattr(core.fit, type)

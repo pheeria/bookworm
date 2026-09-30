@@ -18,7 +18,7 @@ from typing import Literal, get_args
 from pydantic import BaseModel, Field, create_model, model_validator
 
 from . import settings
-from .lettering import Ink, Lettering
+from .lettering import Lettering, TitleCase
 from .moods import MOODS, Mood
 from .palettes import HEX, PALETTES_BY_KEY, Palette, choose_palette
 from .typography import FAMILIES, TYPE_FAMILIES, describe
@@ -130,7 +130,7 @@ class ArtDirection(BaseModel):
     ink: str = Field(pattern=HEX, description="Primary type colour, must read on the ground.")
     accent: str = Field(pattern=HEX, description="Accent for bands, rules and the genre line.")
     secondary: str = Field(pattern=HEX, description="Supporting colour for motifs.")
-    title_case: Literal["upper", "title", "as_is"] = Field(
+    title_case: TitleCase = Field(
         description="How to case the title. Uppercase suits geometric and grotesk display."
     )
     genre_line: str = Field(
@@ -396,11 +396,7 @@ def fallback_direction(
         accent=palette.accent,
         secondary=palette.secondary,
         title_case=_title_case(family),
-        lettering=Lettering(
-            location=("top", "bottom")[(seed >> 4) % 2],
-            title_ink=Ink(color=palette.ink),
-            text_ink=Ink(color=palette.ink),
-        ),
+        lettering=Lettering(location=("top", "bottom")[(seed >> 4) % 2]),
         genre_line=genre,
         image_prompt=_FALLBACK_IMAGE_PROMPT.get(
             style, _FALLBACK_IMAGE_PROMPT[DEFAULT_STYLE]

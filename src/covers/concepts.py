@@ -12,23 +12,19 @@ model never sets type: the typography is set afterwards, exactly, as vector
 outlines. The prompt tells it where the type will go instead.
 """
 
-import logging
 from functools import cache
 from typing import Literal
 
-from pydantic import BaseModel, Field, create_model, model_validator
+from pydantic import BaseModel, Field, create_model
 
-from . import settings
 from .artdirection import DRAWN_MOTIFS, ArtDirection, seed_from
-from .core import BookCore, client
-from .lettering import Lettering
+from .core import BookCore, parse
+from .lettering import Lettering, TitleCase
 from .lettering import zone_text as lettering_zone
 from .moods import Mood
 from .palettes import HEX
 from .profiles import PROFILES
 from .typography import describe
-
-log = logging.getLogger("covers.concepts")
 
 #: KONSTANTEN: true of every cover, whatever the type.
 CONSTANTS = (
@@ -71,16 +67,8 @@ class Concept(BaseModel):
     lettering: Lettering = Field(
         description="picture: where and how the type is set on the image; the picture keeps that area calm."
     )
-
-    @model_validator(mode="before")
-    @classmethod
-    def _stored_type_zone(cls, data):
-        # Concepts stored before lettering had only a zone, top or bottom.
-        if isinstance(data, dict) and "lettering" not in data and "type_zone" in data:
-            data = {**data, "lettering": {"location": data["type_zone"]}}
-        return data
     type_family: str
-    title_case: Literal["upper", "title", "as_is"]
+    title_case: TitleCase
     ground: str = Field(pattern=HEX, description="Ground colour of the cover, hex.")
     ink: str = Field(pattern=HEX, description="Type colour, legible on the ground, hex.")
     accent: str = Field(pattern=HEX, description="Accent for rules and the genre line, hex.")
@@ -108,6 +96,16 @@ def concepts_schema(mood: Mood) -> type[Concepts]:
         __base__=Concepts,
         concepts=(list[concept], Field(description=Concepts.model_fields["concepts"].description)),
     )
+
+
+def load_concepts(mood: Mood, stored: dict) -> Concepts:
+    """Concepts as stored on a cover. Those stored before lettering had only a
+    ``type_zone``, top or bottom."""
+    stored = {**stored, "concepts": [
+        {**c, "lettering": {"location": c["type_zone"]}} if "lettering" not in c and "type_zone" in c else c
+        for c in stored.get("concepts", [])
+    ]}
+    return concepts_schema(mood).model_validate(stored)
 
 
 _SYSTEM = """\
@@ -182,10 +180,6 @@ def _extra(mood: Mood, core: BookCore) -> str:
 
 async def write_concepts(core: BookCore, mood: Mood, *, publisher: str) -> Concepts | None:
     """Three concepts for this title and reader type, or None if Claude is unavailable."""
-    import anthropic
-
-    if (claude := client()) is None:
-        return None
     zones = "\n".join(
         f"  {t}: " + ("the type is set straight onto the picture, where the lettering says"
                       if t == "picture" else TYPE_ZONES[t])
@@ -195,21 +189,12 @@ async def write_concepts(core: BookCore, mood: Mood, *, publisher: str) -> Conce
         f"BUCHKERN:\n{_brief(core)}\n\nPROFIL:\n{_profile(mood)}\n\nKONSTANTEN:\n"
         f"Niemals im Bild: {CONSTANTS}."
     )
-    try:
-        response = await claude.messages.parse(
-            model=settings.claude_model(),
-            max_tokens=16000,
-            system=_SYSTEM.format(publisher=publisher, extra=_extra(mood, core), zones=zones),
-            thinking={"type": "adaptive"},
-            messages=[{"role": "user", "content": content}],
-            output_format=concepts_schema(mood),
-        )
-    except (anthropic.APIError, TypeError, ValueError) as exc:
-        log.warning("concepts failed (%s)", exc)
-        return None
-    if response.stop_reason == "refusal" or not response.parsed_output.concepts:
-        return None
-    return response.parsed_output
+    written = await parse(
+        concepts_schema(mood),
+        system=_SYSTEM.format(publisher=publisher, extra=_extra(mood, core), zones=zones),
+        content=content, what="concepts",
+    )
+    return written if written and written.concepts else None
 
 
 def image_prompt(core: BookCore, mood: Mood, concept: Concept, concepts: Concepts) -> str:
