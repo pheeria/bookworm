@@ -23,6 +23,7 @@ from .artdirection import DRAWN_MOTIFS, HEX, ArtDirection, seed_from
 from .core import BookCore, client
 from .moods import Mood
 from .profiles import PROFILES
+from .typography import describe
 
 log = logging.getLogger("covers.concepts")
 
@@ -100,7 +101,7 @@ def concepts_schema(mood: Mood) -> type[Concepts]:
         f"Concept_{mood.key}",
         __base__=Concept,
         template=(Literal[mood.templates], ...),
-        type_family=(Literal[mood.type_families], ...),
+        type_family=(Literal[mood.type_families], Field(description=describe(mood.type_families))),
     )
     return create_model(
         f"Concepts_{mood.key}",

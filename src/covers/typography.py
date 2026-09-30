@@ -10,6 +10,7 @@ import logging
 import os
 from dataclasses import dataclass
 from functools import cache
+from typing import Literal
 
 import uharfbuzz as hb
 from fontTools.misc.transform import Transform
@@ -70,154 +71,211 @@ _BASKERVILLE, _BASKERVILLE_I = "LibreBaskerville[wght].ttf", "LibreBaskerville-I
 _GARAMOND, _GARAMOND_I = "EBGaramond[wght].ttf", "EBGaramond-Italic[wght].ttf"
 
 
-# Logical families, each weight an ordered list of faces to try. The macOS faces
-# come first where they exist: Futura and Optima are German-publishing
-# workhorses; Didot and Bodoni cover the neoclassical register that Insel and
-# Manesse live in. The last three families are open faces in their own
-# right, chosen because German publishing actually sets in them.
-def _open(
-    upright: str, italic: str, *, display: float = 700, bold: float = 700,
-    regular: float = 400, opsz: tuple[float, float, float] | None = None,
-) -> dict[str, tuple[FontSpec, ...]]:
-    """A bundled variable family: weights per role, and optical sizes if it has them
-    (display, bold, text)."""
-    size = dict(zip(("display", "bold", "text"), opsz)) if opsz else {}
+Faces = dict[str, tuple[FontSpec, ...]]
+Casing = Literal["title", "upper", "never_upper"]
 
+
+@dataclass(frozen=True)
+class Family:
+    """A logical type family: its faces per weight, and what the brief needs to know."""
+
+    #: display, bold, regular and italic, each an ordered list of faces to try.
+    faces: Faces
+    #: One line for the art director: the face, and what it is for.
+    blurb: str
+    #: How its titles may be cased: sans display faces suit capitals, and a
+    #: blackletter title in capitals is unreadable.
+    casing: Casing = "title"
+
+
+def _open(
+    upright: str, italic: str | None = None, *, display: float = 700, bold: float = 700,
+    regular: float = 400, opsz: dict[str, float] | None = None, title: str | None = None,
+) -> Faces:
+    """A bundled variable family at a weight per role.
+
+    ``opsz`` gives optical sizes by role ("display", "bold", "regular"; italic
+    takes the regular one); ``italic`` defaults to the upright for faces with no
+    italic cut; ``title`` sets titles in a separate static face -- a display cut, or
+    a companion the smaller lines cannot use.
+    """
     def at(file: str, wght: float, role: str) -> tuple[FontSpec, ...]:
-        axes = {"wght": wght} | ({"opsz": size[role]} if size else {})
-        return (_v(file, **axes),)
+        size = {"opsz": opsz[role]} if opsz else {}
+        return (_v(file, wght=wght, **size),)
 
     return {
-        "display": at(upright, display, "display"),
+        "display": (FontSpec(title),) if title else at(upright, display, "display"),
         "bold": at(upright, bold, "bold"),
-        "regular": at(upright, regular, "text"),
-        "italic": at(italic, regular, "text"),
+        "regular": at(upright, regular, "regular"),
+        "italic": at(italic or upright, regular, "regular"),
     }
 
 
-def _static(*, display: str, bold: str, regular: str, italic: str) -> dict[str, tuple[FontSpec, ...]]:
-    """A bundled family of static files, one per role."""
-    return {role: (FontSpec(file),) for role, file in
-            (("display", display), ("bold", bold), ("regular", regular), ("italic", italic))}
+def _static(display: str, *, bold: str | None = None, regular: str | None = None,
+            italic: str | None = None) -> Faces:
+    """A bundled family of static files. A role not given falls back to regular, and
+    regular to display, so a one-file face is ``_static(file)``."""
+    regular = regular or display
+    return {role: (FontSpec(file),) for role, file in (
+        ("display", display), ("bold", bold or regular), ("regular", regular),
+        ("italic", italic or regular),
+    )}
 
 
-_GARALDE = {  # EB Garamond -- the Garamond/Sabon of Suhrkamp, Insel and Hanser
-    "display": (_v(_GARAMOND, wght=600),),
-    "bold": (_v(_GARAMOND, wght=700),),
-    "regular": (_v(_GARAMOND, wght=400),),
-    "italic": (_v(_GARAMOND_I, wght=400),),
-}
+def _mac(file: str, open_faces: Faces, **index: int) -> Faces:
+    """A macOS face first, by collection index per role, then the open face."""
+    return {role: (FontSpec(file, index[role]), *open_faces[role]) for role in open_faces}
 
-FAMILIES: dict[str, dict[str, tuple[FontSpec, ...]]] = {
-    "geometric": {  # Futura -- rororo, KiWi, Fischer; open: Jost
-        "display": (FontSpec("Futura.ttc", 4), _v(_JOST, wght=800)),  # Condensed ExtraBold
-        "bold": (FontSpec("Futura.ttc", 2), _v(_JOST, wght=700)),
-        "regular": (FontSpec("Futura.ttc", 0), _v(_JOST, wght=400)),
-        "italic": (FontSpec("Futura.ttc", 1), _v(_JOST_I, wght=400)),
-    },
-    "grotesk": {  # Helvetica Neue; open: Archivo
-        "display": (FontSpec("HelveticaNeue.ttc", 9), _v(_ARCHIVO, wght=900, wdth=62)),
-        "bold": (FontSpec("HelveticaNeue.ttc", 1), _v(_ARCHIVO, wght=700, wdth=100)),
-        "regular": (FontSpec("HelveticaNeue.ttc", 10), _v(_ARCHIVO, wght=400, wdth=100)),
-        "italic": (FontSpec("HelveticaNeue.ttc", 2), _v(_ARCHIVO_I, wght=400, wdth=100)),
-    },
-    "grotesk_condensed": {  # Avenir Next Condensed; open: Nunito Sans at 75% width
-        "display": (FontSpec("Avenir Next Condensed.ttc", 8), _v(_NUNITO, wght=900, wdth=75)),
-        "bold": (FontSpec("Avenir Next Condensed.ttc", 0), _v(_NUNITO, wght=700, wdth=75)),
-        "regular": (FontSpec("Avenir Next Condensed.ttc", 5), _v(_NUNITO, wght=400, wdth=75)),
-        "italic": (FontSpec("Avenir Next Condensed.ttc", 4), _v(_NUNITO_I, wght=400, wdth=75)),
-    },
-    "neoclassical": {  # Didot; open: Playfair Display
-        "display": (FontSpec("Didot.ttc", 2), _v(_PLAYFAIR, wght=700)),
-        "bold": (FontSpec("Didot.ttc", 2), _v(_PLAYFAIR, wght=700)),
-        "regular": (FontSpec("Didot.ttc", 0), _v(_PLAYFAIR, wght=400)),
-        "italic": (FontSpec("Didot.ttc", 1), _v(_PLAYFAIR_I, wght=400)),
-    },
+
+_LORA = _open("Lora[wght].ttf", "Lora-Italic[wght].ttf")
+_OSWALD = "Oswald[wght].ttf"
+
+# Logical families. The macOS faces come first where they exist -- Futura and
+# Optima are German-publishing workhorses; Didot and Bodoni cover the neoclassical
+# register of Insel and Manesse -- each with an open face of the same register
+# behind it. The rest are open faces in their own right.
+FAMILIES: dict[str, Family] = {
+    "geometric": Family(
+        _mac("Futura.ttc", {  # display is Condensed ExtraBold
+            "display": (_v(_JOST, wght=800),), "bold": (_v(_JOST, wght=700),),
+            "regular": (_v(_JOST, wght=400),), "italic": (_v(_JOST_I, wght=400),),
+        }, display=4, bold=2, regular=0, italic=1),
+        "Futura, the rororo/KiWi workhorse (open: Jost)", "upper",
+    ),
+    "grotesk": Family(
+        _mac("HelveticaNeue.ttc", {  # display is Condensed Black
+            "display": (_v(_ARCHIVO, wght=900, wdth=62),), "bold": (_v(_ARCHIVO, wght=700, wdth=100),),
+            "regular": (_v(_ARCHIVO, wght=400, wdth=100),),
+            "italic": (_v(_ARCHIVO_I, wght=400, wdth=100),),
+        }, display=9, bold=1, regular=10, italic=2),
+        "Helvetica Neue (open: Archivo)", "upper",
+    ),
+    "grotesk_condensed": Family(
+        _mac("Avenir Next Condensed.ttc", {  # open: Nunito Sans at 75% width
+            "display": (_v(_NUNITO, wght=900, wdth=75),), "bold": (_v(_NUNITO, wght=700, wdth=75),),
+            "regular": (_v(_NUNITO, wght=400, wdth=75),), "italic": (_v(_NUNITO_I, wght=400, wdth=75),),
+        }, display=8, bold=0, regular=5, italic=4),
+        "a tall condensed sans, Avenir Next Condensed (open: Nunito Sans)", "upper",
+    ),
+    "neoclassical": Family(
+        _mac("Didot.ttc", _open(_PLAYFAIR, _PLAYFAIR_I), display=2, bold=2, regular=0, italic=1),
+        "Didot (open: Playfair Display)",
+    ),
     # opsz 36, not the 96 maximum: at 96 the hairlines vanish in a cover shown
     # at thumbnail size, which is where most covers are seen.
-    "didone": {  # Bodoni 72; open: Bodoni Moda
-        "display": (FontSpec("Bodoni 72.ttc", 2), _v(_BODONI, wght=700, opsz=36)),
-        "bold": (FontSpec("Bodoni 72.ttc", 2), _v(_BODONI, wght=700, opsz=36)),
-        "regular": (FontSpec("Bodoni 72.ttc", 0), _v(_BODONI, wght=400, opsz=11)),
-        "italic": (FontSpec("Bodoni 72.ttc", 1), _v(_BODONI_I, wght=400, opsz=11)),
-    },
-    "literary_serif": {  # Baskerville -- Suhrkamp; open: Libre Baskerville
-        "display": (FontSpec("Baskerville.ttc", 1), _v(_BASKERVILLE, wght=700)),
-        "bold": (FontSpec("Baskerville.ttc", 1), _v(_BASKERVILLE, wght=700)),
-        "regular": (FontSpec("Baskerville.ttc", 0), _v(_BASKERVILLE, wght=400)),
-        "italic": (FontSpec("Baskerville.ttc", 2), _v(_BASKERVILLE_I, wght=400)),
-    },
-    "humanist": {  # Optima -- Hermann Zapf; open: Alegreya Sans
-        "display": (FontSpec("Optima.ttc", 4), FontSpec("AlegreyaSans-Black.ttf")),  # ExtraBlack
-        "bold": (FontSpec("Optima.ttc", 1), FontSpec("AlegreyaSans-Bold.ttf")),
-        "regular": (FontSpec("Optima.ttc", 0), FontSpec("AlegreyaSans-Regular.ttf")),
-        "italic": (FontSpec("Optima.ttc", 2), FontSpec("AlegreyaSans-Italic.ttf")),
-    },
-    "slab": {  # Superclarendon; open: Zilla Slab
-        "display": (FontSpec("SuperClarendon.ttc", 7), FontSpec("ZillaSlab-Bold.ttf")),  # Black
-        "bold": (FontSpec("SuperClarendon.ttc", 5), FontSpec("ZillaSlab-Bold.ttf")),
-        "regular": (FontSpec("SuperClarendon.ttc", 0), FontSpec("ZillaSlab-Regular.ttf")),
-        "italic": (FontSpec("SuperClarendon.ttc", 1), FontSpec("ZillaSlab-Italic.ttf")),
-    },
-    "garalde": _GARALDE,
+    "didone": Family(
+        _mac("Bodoni 72.ttc", _open(_BODONI, _BODONI_I, opsz={"display": 36, "bold": 36, "regular": 11}),
+             display=2, bold=2, regular=0, italic=1),
+        "Bodoni (open: Bodoni Moda)",
+    ),
+    "literary_serif": Family(
+        _mac("Baskerville.ttc", _open(_BASKERVILLE, _BASKERVILLE_I), display=1, bold=1, regular=0, italic=2),
+        "Baskerville, the Suhrkamp register (open: Libre Baskerville)",
+    ),
+    "humanist": Family(
+        _mac("Optima.ttc", _static("AlegreyaSans-Black.ttf", bold="AlegreyaSans-Bold.ttf",
+                                   regular="AlegreyaSans-Regular.ttf", italic="AlegreyaSans-Italic.ttf"),
+             display=4, bold=1, regular=0, italic=2),  # display is ExtraBlack
+        "Optima, Hermann Zapf (open: Alegreya Sans)",
+    ),
+    "slab": Family(
+        _mac("SuperClarendon.ttc", _static("ZillaSlab-Bold.ttf", bold="ZillaSlab-Bold.ttf",
+                                           regular="ZillaSlab-Regular.ttf", italic="ZillaSlab-Italic.ttf"),
+             display=7, bold=5, regular=0, italic=1),  # display is Black
+        "a Clarendon, Superclarendon (open: Zilla Slab)",
+    ),
+    "garalde": Family(
+        _open(_GARAMOND, _GARAMOND_I, display=600),
+        "Garamond, the literary-fiction face of Suhrkamp, Insel and Hanser (EB Garamond)",
+    ),
     # Only the title is blackletter; author and imprint lines, set in tracked
     # capitals, would be unreadable in it, so they stay in Garamond.
-    "fraktur": {  # UnifrakturMaguntia titles, for Märchen and the historical
-        **_GARALDE,
-        "display": (FontSpec("UnifrakturMaguntia-Book.ttf"),),
-        "bold": (_v(_GARAMOND, wght=600),),
-    },
-    # --- More open faces, all bundled, all with full German coverage ---------
-    "cormorant": _open("CormorantGaramond[wght].ttf", "CormorantGaramond-Italic[wght].ttf",
-                       display=700, bold=700, regular=500),  # an elegant display Garamond
-    "crimson": _open("CrimsonPro[wght].ttf", "CrimsonPro-Italic[wght].ttf"),  # Minion-like book face
-    "lora": _open("Lora[wght].ttf", "Lora-Italic[wght].ttf"),  # a warm contemporary serif
-    "source_serif": _open("SourceSerif4[opsz,wght].ttf", "SourceSerif4-Italic[opsz,wght].ttf",
-                          opsz=(60, 20, 12)),  # sober transitional, for non-fiction
-    "spectral": _static(display="Spectral-ExtraBold.ttf", bold="Spectral-Bold.ttf",
-                        regular="Spectral-Regular.ttf", italic="Spectral-Italic.ttf"),
-    "fraunces": _open("Fraunces[SOFT,WONK,opsz,wght].ttf", "Fraunces-Italic[SOFT,WONK,opsz,wght].ttf",
-                      opsz=(144, 36, 14)),  # soft, wonky Old Style; very current
-    "dm_serif": _static(display="DMSerifDisplay-Regular.ttf", bold="DMSerifDisplay-Regular.ttf",
-                        regular="DMSerifDisplay-Regular.ttf", italic="DMSerifDisplay-Italic.ttf"),
-    "caslon": {  # Libre Caslon: the display cut for titles, the text cut beneath
-        "display": (FontSpec("LibreCaslonDisplay-Regular.ttf"),),
-        "bold": (_v("LibreCaslonText[wght].ttf", wght=700),),
-        "regular": (_v("LibreCaslonText[wght].ttf", wght=400),),
-        "italic": (_v("LibreCaslonText-Italic[wght].ttf", wght=400),),
-    },
-    "alegreya": _open("Alegreya[wght].ttf", "Alegreya-Italic[wght].ttf", display=800),
-    "newsreader": _open("Newsreader[opsz,wght].ttf", "Newsreader-Italic[opsz,wght].ttf",
-                        opsz=(72, 20, 12)),  # a newspaper serif, for reportage and essays
-    "young_serif": _static(display="YoungSerif-Regular.ttf", bold="YoungSerif-Regular.ttf",
-                           regular="YoungSerif-Regular.ttf", italic="YoungSerif-Regular.ttf"),
-    "gloock": _static(display="Gloock-Regular.ttf", bold="Gloock-Regular.ttf",
-                      regular="Gloock-Regular.ttf", italic="Gloock-Regular.ttf"),
+    "fraktur": Family(
+        _open(_GARAMOND, _GARAMOND_I, bold=600, title="UnifrakturMaguntia-Book.ttf"),
+        "blackletter titles over Garamond, for fairy tales, legends and historical subjects",
+        "never_upper",
+    ),
+    "meta": Family(
+        _static("FiraSans-Black.ttf", bold="FiraSans-Bold.ttf", regular="FiraSans-Regular.ttf",
+                italic="FiraSans-Italic.ttf"),
+        "Spiekermann's humanist sans (Fira Sans), contemporary and non-fiction in feel", "upper",
+    ),
+    "cormorant": Family(
+        _open("CormorantGaramond[wght].ttf", "CormorantGaramond-Italic[wght].ttf", regular=500),
+        "an elegant display Garamond (Cormorant)",
+    ),
+    "crimson": Family(_open("CrimsonPro[wght].ttf", "CrimsonPro-Italic[wght].ttf"),
+                      "a quiet, Minion-like book face (Crimson Pro)"),
+    "lora": Family(_LORA, "a warm contemporary serif (Lora)"),
+    "source_serif": Family(
+        _open("SourceSerif4[opsz,wght].ttf", "SourceSerif4-Italic[opsz,wght].ttf",
+              opsz={"display": 60, "bold": 20, "regular": 12}),
+        "a sober transitional serif, for non-fiction (Source Serif)",
+    ),
+    "spectral": Family(
+        _static("Spectral-ExtraBold.ttf", bold="Spectral-Bold.ttf", regular="Spectral-Regular.ttf",
+                italic="Spectral-Italic.ttf"),
+        "a fine literary serif (Spectral)",
+    ),
+    "fraunces": Family(
+        _open("Fraunces[SOFT,WONK,opsz,wght].ttf", "Fraunces-Italic[SOFT,WONK,opsz,wght].ttf",
+              opsz={"display": 144, "bold": 36, "regular": 14}),
+        "a soft, wonky Old Style; very current (Fraunces)",
+    ),
+    "dm_serif": Family(_static("DMSerifDisplay-Regular.ttf", italic="DMSerifDisplay-Italic.ttf"),
+                       "a high-contrast display serif (DM Serif Display)"),
+    "caslon": Family(
+        _open("LibreCaslonText[wght].ttf", "LibreCaslonText-Italic[wght].ttf",
+              title="LibreCaslonDisplay-Regular.ttf"),
+        "classic English Caslon, display cut over the text cut (Libre Caslon)",
+    ),
+    "alegreya": Family(_open("Alegreya[wght].ttf", "Alegreya-Italic[wght].ttf", display=800),
+                       "a lively calligraphic serif (Alegreya)"),
+    "newsreader": Family(
+        _open("Newsreader[opsz,wght].ttf", "Newsreader-Italic[opsz,wght].ttf",
+              opsz={"display": 72, "bold": 20, "regular": 12}),
+        "a newspaper serif, for reportage and essays (Newsreader)",
+    ),
+    "young_serif": Family(_static("YoungSerif-Regular.ttf"), "a warm, plump serif (Young Serif)"),
+    "gloock": Family(_static("Gloock-Regular.ttf"), "a bold high-contrast serif (Gloock)"),
     # Abril Fatface is for titles only; the lines beneath are set in Lora.
-    "abril": {**_open("Lora[wght].ttf", "Lora-Italic[wght].ttf"),
-              "display": (FontSpec("AbrilFatface-Regular.ttf"),)},
-    "montserrat": _open("Montserrat[wght].ttf", "Montserrat-Italic[wght].ttf", display=800),
-    "josefin": _open("JosefinSans[wght].ttf", "JosefinSans-Italic[wght].ttf"),  # art-deco geometric
-    "work_sans": _open("WorkSans[wght].ttf", "WorkSans-Italic[wght].ttf", display=800),
-    "inter": _open("Inter[opsz,wght].ttf", "Inter-Italic[opsz,wght].ttf", display=800,
-                   opsz=(32, 14, 14)),
-    "space_grotesk": _open("SpaceGrotesk[wght].ttf", "SpaceGrotesk[wght].ttf"),  # no italic cut
-    "syne": _open("Syne[wght].ttf", "Syne[wght].ttf", display=800),  # no italic cut
-    "oswald": _open("Oswald[wght].ttf", "Oswald[wght].ttf", bold=600),  # condensed; no italic
+    "abril": Family({**_LORA, "display": (FontSpec("AbrilFatface-Regular.ttf"),)},
+                    "a fat didone for titles, over Lora (Abril Fatface)"),
+    "montserrat": Family(_open("Montserrat[wght].ttf", "Montserrat-Italic[wght].ttf", display=800),
+                         "an urban geometric sans (Montserrat)", "upper"),
+    "josefin": Family(_open("JosefinSans[wght].ttf", "JosefinSans-Italic[wght].ttf"),
+                      "an art-deco geometric sans (Josefin Sans)", "upper"),
+    "work_sans": Family(_open("WorkSans[wght].ttf", "WorkSans-Italic[wght].ttf", display=800),
+                        "a friendly grotesk (Work Sans)", "upper"),
+    "inter": Family(
+        _open("Inter[opsz,wght].ttf", "Inter-Italic[opsz,wght].ttf", display=800,
+              opsz={"display": 32, "bold": 14, "regular": 14}),
+        "a neutral, precise sans (Inter)", "upper",
+    ),
+    "space_grotesk": Family(_open("SpaceGrotesk[wght].ttf"), "a quirky contemporary sans (Space Grotesk)",
+                            "upper"),
+    "syne": Family(_open("Syne[wght].ttf", display=800),
+                   "an expressive fashion sans, very wide at display weight (Syne)", "upper"),
+    "oswald": Family(_open(_OSWALD, bold=600), "a condensed gothic (Oswald)", "upper"),
     # Bebas Neue has capitals only and one weight; the smaller lines are in Oswald.
-    "bebas": {**_open("Oswald[wght].ttf", "Oswald[wght].ttf", bold=500),
-              "display": (FontSpec("BebasNeue-Regular.ttf"),)},
-    "barlow_condensed": _static(display="BarlowCondensed-Black.ttf", bold="BarlowCondensed-Bold.ttf",
-                                regular="BarlowCondensed-Regular.ttf", italic="BarlowCondensed-Italic.ttf"),
-    "grenze_gotisch": _open("GrenzeGotisch[wght].ttf", "GrenzeGotisch[wght].ttf", bold=600),
-    "cinzel": _open("Cinzel[wght].ttf", "Cinzel[wght].ttf", bold=600),  # Roman capitals only
-    "meta": {  # Fira Sans -- Erik Spiekermann's open successor to FF Meta
-        "display": (FontSpec("FiraSans-Black.ttf"),),
-        "bold": (FontSpec("FiraSans-Bold.ttf"),),
-        "regular": (FontSpec("FiraSans-Regular.ttf"),),
-        "italic": (FontSpec("FiraSans-Italic.ttf"),),
-    },
+    "bebas": Family(_open(_OSWALD, bold=500, title="BebasNeue-Regular.ttf"),
+                    "tall condensed capitals, over Oswald (Bebas Neue)", "upper"),
+    "barlow_condensed": Family(
+        _static("BarlowCondensed-Black.ttf", bold="BarlowCondensed-Bold.ttf",
+                regular="BarlowCondensed-Regular.ttf", italic="BarlowCondensed-Italic.ttf"),
+        "a DIN-like condensed sans (Barlow Condensed)", "upper",
+    ),
+    "grenze_gotisch": Family(_open("GrenzeGotisch[wght].ttf", bold=600),
+                             "a modern blackletter, for historical subjects (Grenze Gotisch)", "never_upper"),
+    "cinzel": Family(_open("Cinzel[wght].ttf", bold=600),
+                     "Roman inscriptional capitals, for myth and fantasy (Cinzel)"),
 }
+
+
+def describe(families: tuple[str, ...]) -> str:
+    """The families, one line each, as the brief's type_family description."""
+    return "; ".join(f"{name}: {FAMILIES[name].blurb}" for name in families) + "."
+
 
 TYPE_FAMILIES = tuple(FAMILIES)
 
@@ -297,7 +355,7 @@ def _hb_face(path: str, index: int) -> hb.Face:
 @cache
 def face(family: str, weight: str = "display") -> Face:
     """The first of the family's faces for ``weight`` that is present."""
-    for spec in FAMILIES[family][weight]:
+    for spec in FAMILIES[family].faces[weight]:
         if path := _find(spec.file):
             return Face(_hb_face(path, spec.index), spec.axes)
     raise MissingFontError(
@@ -307,8 +365,8 @@ def face(family: str, weight: str = "display") -> Face:
 
 def check_fonts() -> None:
     """Load every family and weight, so a missing face fails at startup, not mid-render."""
-    for family, weights in FAMILIES.items():
-        for weight in weights:
+    for family, record in FAMILIES.items():
+        for weight in record.faces:
             face(family, weight)
 
 

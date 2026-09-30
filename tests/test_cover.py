@@ -98,7 +98,7 @@ def test_every_family_has_its_own_open_face(bundled_fonts_only, family, weight):
     bundled face rather than silently borrowing another family's."""
     from covers.typography import BUNDLED_DIR, FAMILIES, _find
 
-    found = [_find(spec.file) for spec in FAMILIES[family][weight]]
+    found = [_find(spec.file) for spec in FAMILIES[family].faces[weight]]
     assert any(p and p.startswith(BUNDLED_DIR) for p in found)
     f = face(family, weight)
     for text in ("Die Übersetzerin", "STRASSE ÄÖÜ", "»Märchen« – 1999"):
@@ -548,3 +548,26 @@ def test_the_picture_zone_moves_the_type():
         return _path_y_range(paths[1])[0]  # author, then title
 
     assert title_top("top") < title_top("bottom")
+
+
+def test_each_moods_brief_describes_only_its_own_families():
+    from covers.artdirection import brief_schema
+    from covers.concepts import concepts_schema
+    from covers.moods import MOODS
+    from covers.typography import FAMILIES
+
+    heart = MOODS["heart"]
+    for description in (
+        brief_schema(heart).model_fields["type_family"].description,
+        concepts_schema(heart).model_json_schema()["$defs"]["Concept_heart"]["properties"]["type_family"]["description"],
+    ):
+        for family in FAMILIES:
+            assert (f"{family}: " in description) == (family in heart.type_families), family
+
+
+def test_casing_follows_each_family():
+    d = fallback_direction("Ein Buch.", "T", "A")
+    assert apply_overrides(d.model_copy(update={"title_case": "upper"}), type_family="grenze_gotisch").title_case == "title"
+    from covers.artdirection import _title_case
+
+    assert (_title_case("bebas"), _title_case("lora")) == ("upper", "title")

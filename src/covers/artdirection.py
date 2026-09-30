@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field, create_model, model_validator
 from . import settings
 from .moods import MOODS, Mood
 from .palettes import PALETTES_BY_KEY, Palette, choose_palette
-from .typography import FAMILIES
+from .typography import FAMILIES, TYPE_FAMILIES, describe
 
 log = logging.getLogger("covers.artdirection")
 
@@ -35,46 +35,7 @@ Template = Literal[
 ]
 TEMPLATES: tuple[str, ...] = get_args(Template)
 
-TypeFamily = Literal[
-    "geometric",
-    "grotesk",
-    "grotesk_condensed",
-    "neoclassical",
-    "didone",
-    "literary_serif",
-    "humanist",
-    "slab",
-    "garalde",
-    "fraktur",
-    "meta",
-    "cormorant",
-    "crimson",
-    "lora",
-    "source_serif",
-    "spectral",
-    "fraunces",
-    "dm_serif",
-    "caslon",
-    "alegreya",
-    "newsreader",
-    "young_serif",
-    "gloock",
-    "abril",
-    "montserrat",
-    "josefin",
-    "work_sans",
-    "inter",
-    "space_grotesk",
-    "syne",
-    "oswald",
-    "bebas",
-    "barlow_condensed",
-    "grenze_gotisch",
-    "cinzel",
-]
-
-#: Blackletters: a title in their capitals is unreadable.
-_NO_CAPITALS = frozenset({"fraktur", "grenze_gotisch"})
+TypeFamily = Literal[TYPE_FAMILIES]  # type: ignore[valid-type]
 
 Motif = Literal["arcs", "blocks", "dots", "split", "waveform", "rings", "none"]
 MOTIFS: tuple[str, ...] = get_args(Motif)
@@ -83,9 +44,6 @@ DRAWN_MOTIFS: tuple[str, ...] = tuple(m for m in MOTIFS if m != "none")
 
 Artwork = Literal["generated", "procedural", "none"]
 
-# The Literal has to be spelled out for Pydantic; keep it honest against the
-# faces typography actually offers.
-assert set(FAMILIES) == set(get_args(TypeFamily))
 for _mood in MOODS.values():
     assert set(_mood.templates) <= set(TEMPLATES), _mood.key
     assert set(_mood.type_families) <= set(FAMILIES), _mood.key
@@ -113,6 +71,14 @@ HEX = r"^#[0-9A-Fa-f]{6}$"
 
 #: How much of the input text is shown to the model.
 MAX_PROMPT_CHARS = 24_000
+
+
+def _family_description(families: tuple[str, ...]) -> str:
+    """What the brief is told about the type families it may choose from."""
+    return (
+        "Name the register, not a font file; a macOS face named here is set in its "
+        "open counterpart where it is not installed. " + describe(families)
+    )
 
 
 class ArtDirection(BaseModel):
@@ -148,31 +114,7 @@ class ArtDirection(BaseModel):
             "image prompt must keep that third calm -- sky, water, a plain wall."
         ),
     )
-    type_family: TypeFamily = Field(
-        description=(
-            "Name the register, not a font file; each is set in the face named or its "
-            "open counterpart. geometric is Futura (the rororo/KiWi workhorse), grotesk "
-            "is Helvetica Neue, grotesk_condensed is a tall condensed sans, neoclassical "
-            "is Didot, didone is Bodoni, literary_serif is Baskerville, humanist is "
-            "Optima, slab is a Clarendon. "
-            "garalde is Garamond, the classic literary-fiction face of Suhrkamp, Insel "
-            "and Hanser. fraktur is blackletter for the title, for fairy tales, legends "
-            "and historical subjects; never set it in capitals. meta is Spiekermann's "
-            "humanist sans, contemporary and non-fiction in feel. "
-            "Serifs: cormorant (elegant display Garamond), crimson (a quiet book face), "
-            "lora (warm contemporary), source_serif (sober, for non-fiction), spectral "
-            "(literary, fine), fraunces (soft wonky Old Style, very current), dm_serif "
-            "(high-contrast display), caslon (Libre Caslon, classic English), alegreya "
-            "(lively calligraphic), newsreader (reportage and essays), young_serif (warm "
-            "and plump), gloock (bold high-contrast), abril (fat didone for titles). "
-            "Sans: montserrat (urban geometric), josefin (art-deco geometric), work_sans "
-            "(friendly grotesk), inter (neutral, precise), space_grotesk (quirky "
-            "contemporary), syne (expressive, fashion), oswald (condensed), bebas (tall "
-            "condensed capitals), barlow_condensed (DIN-like condensed). Other: "
-            "grenze_gotisch (modern blackletter, historical subjects; never in capitals), "
-            "cinzel (Roman inscriptional capitals, for myth and fantasy)."
-        )
-    )
+    type_family: TypeFamily = Field(description=_family_description(TYPE_FAMILIES))
     artwork: Artwork = Field(
         description=(
             "generated: have the image model paint artwork. This is the normal "
@@ -214,7 +156,7 @@ class ArtDirection(BaseModel):
     def _no_blackletter_capitals(self) -> "ArtDirection":
         # Blackletter capitals are not meant to stand in a row; a title in them is
         # unreadable. Holds whoever chose the casing, model or caller.
-        if self.type_family in _NO_CAPITALS and self.title_case == "upper":
+        if FAMILIES[self.type_family].casing == "never_upper" and self.title_case == "upper":
             self.title_case = "title"
         return self
 
@@ -323,7 +265,8 @@ def brief_schema(mood: Mood | None = None) -> type[ArtDirection]:
         __base__=ArtDirection,
         template=(Literal[mood.templates], Field(description=fields["template"].description)),
         type_family=(
-            Literal[mood.type_families], Field(description=fields["type_family"].description)
+            Literal[mood.type_families],
+            Field(description=_family_description(mood.type_families)),
         ),
     )
 
@@ -408,16 +351,9 @@ _FALLBACK_IMAGE_PROMPT = {
 }
 
 
-#: Sans display faces that suit a title in capitals.
-_UPPER = frozenset({
-    "geometric", "grotesk", "grotesk_condensed", "montserrat", "josefin", "work_sans",
-    "inter", "space_grotesk", "syne", "oswald", "bebas", "barlow_condensed",
-})
-
-
 def _title_case(family: str) -> str:
     """Uppercase suits the geometric and grotesk display faces; the rest set in title case."""
-    return "upper" if family in _UPPER else "title"
+    return "upper" if FAMILIES[family].casing == "upper" else "title"
 
 
 def _family_for(template: str, allowed: tuple[str, ...], seed: int) -> str:
