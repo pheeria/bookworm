@@ -236,3 +236,81 @@ def test_bad_requests_are_422(client):
     base = f"/books/{SLUG}/covers"
     assert client.post(base, json={"type": "romance"}).status_code == 422
     assert client.patch(f"{base}/x", json={"color": "red"}).status_code == 422
+
+
+# --- Uploads ---
+
+
+def _image(color="#1b3a8c", fmt="JPEG", size=(300, 450)) -> bytes:
+    import io
+
+    from PIL import Image, ImageDraw
+
+    img = Image.new("RGB", size, color)
+    ImageDraw.Draw(img).rectangle((40, 60, 260, 120), fill="#f4f1e8")  # a title panel
+    out = io.BytesIO()
+    img.save(out, format=fmt)
+    return out.getvalue()
+
+
+def upload(client, title=KIWI_HARDCOVER["title"], type="suspense", data=None, name="cover.jpg"):
+    return client.post(
+        "/covers/upload",
+        data={"title": title, "type": type},
+        files={"file": (name, data if data is not None else _image(), "image/jpeg")},
+    )
+
+
+def test_an_uploaded_cover_is_published_on_its_book(client):
+    response = upload(client, title="  alleinruhelage ")  # case and spacing ignored
+    assert response.status_code == 201, response.text
+    cover = response.json()
+    assert (cover["book"], cover["type"], cover["status"]) == (SLUG, "suspense", "published")
+    assert cover["published_at"]
+    assert cover["source"] == "uploaded" and cover["art_direction"] is None
+    # The colour is the image's ground, and the theme follows from it.
+    assert cover["color"] == "#1b3a8c"
+    assert cover["theme"] == theme_for("#1b3a8c").model_dump()
+
+    image = client.get(cover["url"])
+    assert image.headers["content-type"] == "image/png"
+    assert image.content[:8] == b"\x89PNG\r\n\x1a\n"  # stored as PNG, whatever came in
+
+    assert [c["id"] for c in client.get(f"/books/{SLUG}/covers").json()] == [cover["id"]]
+    # Straight onto the book, where the UI reads covers from.
+    assert book_entries(client) == [GeneratedCover.model_validate(cover).model_dump()]
+    client.post(f"/books/{SLUG}/covers/{cover['id']}/unpublish")
+    assert book_entries(client) == []
+
+
+def test_a_light_upload_gets_a_light_theme(client):
+    cover = upload(client, data=_image("#f2ead3", fmt="PNG"), name="cover.png").json()
+    assert cover["color"] == "#f2ead3"
+    assert "fbf8f3" not in cover["theme"]["text"]  # dark type on a light page
+
+
+def test_regenerating_an_upload_renders_it_afresh(client):
+    cover = upload(client).json()
+    again = client.post(f"/books/{SLUG}/covers/{cover['id']}/regenerate").json()
+    assert again["source"] == "generated" and again["art_direction"]
+    assert again["type"] == "suspense"
+    assert client.get(cover["url"]).status_code == 404  # the upload is replaced
+    [entry] = book_entries(client)  # and the book shows the new render
+    assert entry["url"] == again["url"]
+
+
+def test_upload_title_must_name_exactly_one_book(client):
+    assert upload(client, title="Kein solches Buch").status_code == 404
+    twin = {**SEEDED[1], "title": KIWI_HARDCOVER["title"],
+            "slug": "zwilling-9783462006049", "isbn": "9783462006049"}
+    assert client.post("/books", json=twin).status_code == 201
+    response = upload(client)
+    assert response.status_code == 409
+    assert SLUG in response.json()["detail"] and twin["slug"] in response.json()["detail"]
+
+
+def test_upload_refuses_what_is_not_a_cover(client):
+    assert upload(client, data=b"not an image", name="notes.txt").status_code == 422
+    assert upload(client, type="romance").status_code == 422
+    assert client.post("/covers/upload", data={"title": "Alleinruhelage", "type": "heart"}).status_code == 422
+    assert client.get(f"/books/{SLUG}/covers").json() == []  # nothing was stored

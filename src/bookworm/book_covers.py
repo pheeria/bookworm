@@ -8,6 +8,7 @@
     POST   /books/{slug}/covers/{id}/publish      put the short entry on the book
     POST   /books/{slug}/covers/{id}/unpublish
     DELETE /books/{slug}/covers/{id}
+    POST   /covers/upload                     add a finished cover to its book, published
     GET    /cover-images/{image_id}.png       immutable; a new render gets a new URL
 
 Nothing about a cover is picked by hand. The reader type decides how it feels
@@ -20,16 +21,28 @@ in its ``generated_covers``, which is kept in step with the cover document.
 """
 
 import asyncio
+import io
 import uuid
 from datetime import UTC, datetime
 from typing import Annotated, Any, Literal, get_args
 
 from bson import ObjectId
 from bson.errors import InvalidId
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Request,
+    Response,
+    UploadFile,
+    status,
+)
 from fastapi.concurrency import run_in_threadpool
 from fastapi.exceptions import RequestValidationError
-from pydantic import BaseModel, Field, ValidationError
+from PIL import Image, UnidentifiedImageError
+from pydantic import BaseModel, Field, ValidationError, create_model
 
 from books import db as books_db
 from books.models import Book, BookTheme, Color, GeneratedCover, ReaderType
@@ -70,17 +83,33 @@ class CoverPatch(BaseModel):
     theme: BookTheme | None = None
 
 
-class BookCover(CoverResult):
+# An uploaded cover has no brief, geometry or request: every generation field is
+# optional on a book cover, with the same types and descriptions otherwise.
+_Generation = create_model(
+    "_Generation",
+    **{
+        name: (field.annotation | None, Field(default=None, description=field.description))
+        for name, field in CoverResult.model_fields.items()
+    },
+)
+
+Source = Literal["generated", "uploaded"]
+
+
+class BookCover(_Generation):
     id: str
     book: str = Field(description="The book's slug.")
     type: ReaderType
     status: Status
     published_at: datetime | None = None
+    source: Source = Field(default="generated", description="Rendered here, or uploaded.")
     url: str = Field(description="The front cover PNG.")
-    color: str
+    color: str = Field(description="Sampled from the image for an upload, the brief's ground otherwise.")
     theme: BookTheme
     options: dict[str, Any] = Field(description="What the caller set (the brief text); regeneration reuses it.")
-    request: dict[str, Any] = Field(description="The effective request: book, publisher, reader type and options.")
+    request: dict[str, Any] | None = Field(
+        default=None, description="The effective request: book, publisher, reader type and options."
+    )
     created_at: datetime
     updated_at: datetime
 
@@ -139,6 +168,36 @@ def theme_for(color: str) -> BookTheme:
         button=f"bg-[{ink}] text-[{_tint(color, 0.8)}]",
         ring="ring-black/10",
     )
+
+
+def dominant_color(img: Image.Image) -> str:
+    """The cover's most common colour once reduced to five: its ground, usually."""
+    small = img.convert("RGB")
+    small.thumbnail((96, 144))
+    quantized = small.quantize(colors=5, method=Image.Quantize.MEDIANCUT)
+    _, index = max(quantized.getcolors())
+    r, g, b = quantized.getpalette()[index * 3 : index * 3 + 3]
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+
+#: Larger than any cover a browser should be sending.
+MAX_UPLOAD_BYTES = 20 * 1024 * 1024
+
+
+def _decode_upload(data: bytes) -> tuple[bytes, str]:
+    """The upload as PNG, and its colour. 422 for anything that is not an image."""
+    try:
+        with Image.open(io.BytesIO(data)) as img:
+            img.load()
+            # Stored as PNG like every other cover, so /cover-images serves one type.
+            img = img.convert("RGBA" if "A" in img.getbands() else "RGB")
+    except (UnidentifiedImageError, OSError, Image.DecompressionBombError) as exc:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT, "the file is not an image Pillow can read"
+        ) from exc
+    out = io.BytesIO()
+    img.save(out, format="PNG")
+    return out.getvalue(), dominant_color(img)
 
 
 # --- Plumbing -----------------------------------------------------------------
@@ -207,6 +266,7 @@ async def _render(
         **{k: result[k] for k in CoverResult.model_fields},
         # A hash-derived seed can exceed BSON's 64-bit ints; BookCover reads it back.
         "seed": str(result["seed"]),
+        "source": "generated",
         "image_id": image_id,
         "url": f"/cover-images/{image_id}.png",
         "color": color,
@@ -317,6 +377,51 @@ async def delete_book_cover(slug: str, cover_id: str, stores: Deps) -> None:
         run_in_threadpool(books_db.remove_cover_entry, stores.books, book_id, cover_id),
         run_in_threadpool(cover_store.delete_image, stores.images, doc["image_id"]),
     )
+
+
+@router.post("/covers/upload", response_model=BookCover, status_code=status.HTTP_201_CREATED)
+async def upload_book_cover(
+    stores: Deps,
+    file: Annotated[UploadFile, File(description="The finished front cover, any common image format.")],
+    title: Annotated[str, Form(min_length=1, description="The book's title, matched ignoring case.")],
+    type: Annotated[ReaderType, Form(description="Who the cover is for.")],
+) -> BookCover:
+    """Add a cover made elsewhere to the book with this title, and publish it.
+
+    An upload is already a finished cover, so it goes straight into the book's
+    ``generated_covers``; unpublish it like any other to take it off. The colour is
+    sampled from the image and the page theme derived from it, as for a generated
+    cover; the image is stored as PNG in GridFS.
+    """
+    matches = await run_in_threadpool(books_db.find_by_title, stores.books, title)
+    if not matches:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"no book titled {title.strip()!r}")
+    if len(matches) > 1:
+        slugs = ", ".join(book.slug for _, book in matches)
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, f"several books are titled {title.strip()!r}: {slugs}"
+        )
+    book_id, book = matches[0]
+
+    data = await file.read(MAX_UPLOAD_BYTES + 1)
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status.HTTP_413_CONTENT_TOO_LARGE, f"covers are limited to {MAX_UPLOAD_BYTES // 2**20} MB"
+        )
+    png, color = await run_in_threadpool(_decode_upload, data)
+
+    cover_id = uuid.uuid4().hex[:16]
+    image_id = await run_in_threadpool(cover_store.put_image, stores.images, cover_id, png)
+    doc = {
+        "id": cover_id, "book_id": book_id, "type": type, "status": "published",
+        "published_at": datetime.now(UTC), "source": "uploaded", "image_id": image_id,
+        "url": f"/cover-images/{image_id}.png", "color": color,
+        "theme": theme_for(color).model_dump(), "options": {},
+        "filename": file.filename,
+    }
+    doc = await run_in_threadpool(cover_store.insert, stores.covers, doc)
+    await _sync_entry(stores, book_id, doc)
+    return _response(doc, book.slug)
 
 
 @router.get("/cover-images/{image_id}.png", response_class=Response)

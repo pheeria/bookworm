@@ -146,6 +146,13 @@ def find_book(books: Collection, slug: str) -> tuple[ObjectId, Book] | None:
     return (doc.pop("_id"), Book.model_validate(doc)) if doc else None
 
 
+def find_by_title(books: Collection, title: str) -> list[tuple[ObjectId, Book]]:
+    """Books whose title is ``title``, ignoring case and surrounding whitespace."""
+    pattern = {"$regex": f"^{re.escape(title.strip())}$", "$options": "i"}
+    docs = books.find({"title": pattern}, {"created_at": 0, "updated_at": 0})
+    return [(doc.pop("_id"), Book.model_validate(doc)) for doc in docs]
+
+
 def book_id(books: Collection, slug: str) -> ObjectId | None:
     """Just the database id of the book at ``slug``."""
     doc = books.find_one({"slug": slug}, {"_id": 1})

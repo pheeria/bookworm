@@ -146,7 +146,19 @@ for covers made outside a book, alongside its full set of overrides.
 | `POST` | `/books/{slug}/covers/{id}/publish` | Add `{id, type, url, color, theme}` to the book's `generated_covers` |
 | `POST` | `/books/{slug}/covers/{id}/unpublish` | Remove it again |
 | `DELETE` | `/books/{slug}/covers/{id}` | The cover, its image and its entry. 204 |
+| `POST` | `/covers/upload` | Add a finished cover to its book, published: multipart `file`, `title`, `type`. See below. 201 |
 | `GET` | `/cover-images/{image_id}.png` | The image, cached as immutable: each render gets a new id and URL. Not under the book, so a published `url` survives a slug change |
+
+**Uploading a finished cover.** `POST /covers/upload` takes a multipart form with
+the image `file`, the book's `title` and the reader `type`. The title is matched
+exactly, ignoring case and surrounding spaces: no match is 404, and several books
+with that title are a 409 that lists their slugs. The image is stored in GridFS
+as PNG (up to 20 MB, any format Pillow reads), its colour is sampled as the most
+common of five after reduction (the ground, on most covers), and the page theme
+is derived from that colour as for generated covers. An upload is a finished
+cover, so it is published at once, straight into the book's `generated_covers`,
+with `source: "uploaded"` and no brief; unpublish it like any other. Regenerating
+it replaces it with a generated cover of the same type.
 
 A published cover's entry follows the cover: a PATCH or a regeneration updates it.
 `color` is the brief's ground colour, and `theme` is derived from it by the same
