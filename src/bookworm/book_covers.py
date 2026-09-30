@@ -1,4 +1,4 @@
-"""Covers for books: generate from a book's details, edit, publish.
+"""Covers for books: generate from a book's details, or upload one; edit, publish.
 
     POST   /books/{slug}/covers                   generate a draft
     GET    /books/{slug}/covers                   list, filter by status and type
@@ -11,10 +11,11 @@
     POST   /covers/upload                     add a finished cover to its book, published
     GET    /cover-images/{image_id}.png       immutable; a new render gets a new URL
 
-Nothing about a cover is picked by hand. The reader type decides how it feels
-and what it may be set in (``covers.moods``); the publisher decides the
+Nothing about a generated cover is picked by hand. The reader type decides how
+it feels and what it may be set in (``covers.moods``); the publisher decides the
 formalities (``bookworm.houses``); the book supplies the words. A caller only
-chooses the type, and may rewrite the brief text.
+chooses the type, and may rewrite the brief text. An uploaded cover is the
+caller's own image; only its colour and theme are derived.
 
 The book is read, never written, except for the short entry of a published cover
 in its ``generated_covers``, which is kept in step with the cover document.
@@ -41,8 +42,8 @@ from fastapi import (
 )
 from fastapi.concurrency import run_in_threadpool
 from fastapi.exceptions import RequestValidationError
-from PIL import Image, UnidentifiedImageError
-from pydantic import BaseModel, Field, ValidationError, create_model
+from PIL import Image
+from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
 from books import db as books_db
 from books.models import Book, BookTheme, Color, GeneratedCover, ReaderType
@@ -83,35 +84,41 @@ class CoverPatch(BaseModel):
     theme: BookTheme | None = None
 
 
-# An uploaded cover has no brief, geometry or request: every generation field is
-# optional on a book cover, with the same types and descriptions otherwise.
-_Generation = create_model(
-    "_Generation",
-    **{
-        name: (field.annotation | None, Field(default=None, description=field.description))
-        for name, field in CoverResult.model_fields.items()
-    },
-)
+class _BookCoverBase(BaseModel):
+    """What every cover of a book has, however it was made."""
 
-Source = Literal["generated", "uploaded"]
-
-
-class BookCover(_Generation):
     id: str
     book: str = Field(description="The book's slug.")
     type: ReaderType
     status: Status
     published_at: datetime | None = None
-    source: Source = Field(default="generated", description="Rendered here, or uploaded.")
     url: str = Field(description="The front cover PNG.")
-    color: str = Field(description="Sampled from the image for an upload, the brief's ground otherwise.")
+    color: str
     theme: BookTheme
     options: dict[str, Any] = Field(description="What the caller set (the brief text); regeneration reuses it.")
-    request: dict[str, Any] | None = Field(
-        default=None, description="The effective request: book, publisher, reader type and options."
-    )
     created_at: datetime
     updated_at: datetime
+
+
+class GeneratedBookCover(_BookCoverBase, CoverResult):
+    """Rendered here: the brief, geometry and request that made it come with it."""
+
+    source: Literal["generated"] = "generated"
+    color: str = Field(description="The brief's ground colour.")
+    request: dict[str, Any] = Field(
+        description="The effective request: book, publisher, reader type and options."
+    )
+
+
+class UploadedBookCover(_BookCoverBase):
+    """Made elsewhere and uploaded: an image, and what was derived from it."""
+
+    source: Literal["uploaded"]
+    color: str = Field(description="Sampled from the image.")
+
+
+BookCover = Annotated[GeneratedBookCover | UploadedBookCover, Field(discriminator="source")]
+_BookCoverAdapter = TypeAdapter(BookCover)
 
 
 # --- Book details -> cover request --------------------------------------------
@@ -172,12 +179,11 @@ def theme_for(color: str) -> BookTheme:
 
 def dominant_color(img: Image.Image) -> str:
     """The cover's most common colour once reduced to five: its ground, usually."""
-    small = img.convert("RGB")
-    small.thumbnail((96, 144))
+    # Shrink before converting, so a large upload is never copied at full size.
+    small = img.resize((96, 144), Image.Resampling.BOX).convert("RGB")
     quantized = small.quantize(colors=5, method=Image.Quantize.MEDIANCUT)
     _, index = max(quantized.getcolors())
-    r, g, b = quantized.getpalette()[index * 3 : index * 3 + 3]
-    return f"#{r:02x}{g:02x}{b:02x}"
+    return _hex(*quantized.getpalette()[index * 3 : index * 3 + 3])
 
 
 #: Larger than any cover a browser should be sending.
@@ -189,15 +195,20 @@ def _decode_upload(data: bytes) -> tuple[bytes, str]:
     try:
         with Image.open(io.BytesIO(data)) as img:
             img.load()
+            color = dominant_color(img)
             # Stored as PNG like every other cover, so /cover-images serves one type.
-            img = img.convert("RGBA" if "A" in img.getbands() else "RGB")
-    except (UnidentifiedImageError, OSError, Image.DecompressionBombError) as exc:
+            # A PNG that is already RGB or RGBA is kept exactly as uploaded.
+            if img.format == "PNG" and img.mode in ("RGB", "RGBA"):
+                return data, color
+            if img.mode not in ("RGB", "RGBA"):
+                img = img.convert("RGBA" if "A" in img.getbands() else "RGB")
+            out = io.BytesIO()
+            img.save(out, format="PNG")
+            return out.getvalue(), color
+    except (OSError, Image.DecompressionBombError) as exc:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT, "the file is not an image Pillow can read"
         ) from exc
-    out = io.BytesIO()
-    img.save(out, format="PNG")
-    return out.getvalue(), dominant_color(img)
 
 
 # --- Plumbing -----------------------------------------------------------------
@@ -248,7 +259,27 @@ async def _update(stores: Stores, book_id: ObjectId, cover_id: str, fields: dict
 
 
 def _response(doc: dict, slug: str) -> BookCover:
-    return BookCover.model_validate({**doc, "book": slug})
+    # Covers stored before uploads existed carry no source: they were all rendered.
+    return _BookCoverAdapter.validate_python({"source": "generated", **doc, "book": slug})
+
+
+def _new_cover_id() -> str:
+    return uuid.uuid4().hex[:16]
+
+
+def _image_fields(image_id: ObjectId, color: str) -> dict:
+    """Where a cover's stored PNG is served, and the colour and theme that go with it."""
+    return {
+        "image_id": image_id,
+        "url": f"/cover-images/{image_id}.png",
+        "color": color,
+        "theme": theme_for(color).model_dump(),
+    }
+
+
+def _published(since: datetime | None = None) -> dict:
+    """The fields of a published cover; republishing keeps the first date."""
+    return {"status": "published", "published_at": since or datetime.now(UTC)}
 
 
 async def _render(
@@ -267,20 +298,17 @@ async def _render(
         # A hash-derived seed can exceed BSON's 64-bit ints; BookCover reads it back.
         "seed": str(result["seed"]),
         "source": "generated",
-        "image_id": image_id,
-        "url": f"/cover-images/{image_id}.png",
-        "color": color,
-        "theme": theme_for(color).model_dump(),
+        **_image_fields(image_id, color),
         "options": options,
         "request": request.model_dump(mode="json"),
     }
 
 
-async def _sync_entry(stores: Stores, book_id: ObjectId, doc: dict) -> None:
+async def _sync_entry(stores: Stores, book_id: ObjectId, doc: dict, *, new: bool = False) -> None:
     """Keep a published cover's short entry on the book in step with the cover."""
     if doc["status"] == "published":
         entry = GeneratedCover.model_validate(doc)
-        await run_in_threadpool(books_db.put_cover_entry, stores.books, book_id, entry)
+        await run_in_threadpool(books_db.put_cover_entry, stores.books, book_id, entry, new=new)
 
 
 # --- Endpoints ----------------------------------------------------------------
@@ -289,7 +317,7 @@ async def _sync_entry(stores: Stores, book_id: ObjectId, doc: dict) -> None:
 @router.post("/books/{slug}/covers", response_model=BookCover, status_code=status.HTTP_201_CREATED)
 async def create_book_cover(slug: str, body: BookCoverRequest, stores: Deps) -> BookCover:
     book_id, book = await _book(stores, slug)
-    cover_id = uuid.uuid4().hex[:16]
+    cover_id = _new_cover_id()
     options = body.model_dump(exclude_unset=True, exclude={"type"})
     fields = await _render(stores, cover_id, book, body.type, options)
     doc = {"id": cover_id, "book_id": book_id, "type": body.type, "status": "draft",
@@ -351,8 +379,7 @@ async def regenerate_book_cover(
 async def publish_book_cover(slug: str, cover_id: str, stores: Deps) -> BookCover:
     book_id = await _book_id(stores, slug)
     old = await _cover(stores, book_id, cover_id)
-    fields = {"status": "published", "published_at": old["published_at"] or datetime.now(UTC)}
-    doc = await _update(stores, book_id, cover_id, fields)
+    doc = await _update(stores, book_id, cover_id, _published(old["published_at"]))
     await _sync_entry(stores, book_id, doc)
     return _response(doc, slug)
 
@@ -393,14 +420,13 @@ async def upload_book_cover(
     sampled from the image and the page theme derived from it, as for a generated
     cover; the image is stored as PNG in GridFS.
     """
+    title = title.strip()
     matches = await run_in_threadpool(books_db.find_by_title, stores.books, title)
     if not matches:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, f"no book titled {title.strip()!r}")
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"no book titled {title!r}")
     if len(matches) > 1:
         slugs = ", ".join(book.slug for _, book in matches)
-        raise HTTPException(
-            status.HTTP_409_CONFLICT, f"several books are titled {title.strip()!r}: {slugs}"
-        )
+        raise HTTPException(status.HTTP_409_CONFLICT, f"several books are titled {title!r}: {slugs}")
     book_id, book = matches[0]
 
     data = await file.read(MAX_UPLOAD_BYTES + 1)
@@ -410,17 +436,16 @@ async def upload_book_cover(
         )
     png, color = await run_in_threadpool(_decode_upload, data)
 
-    cover_id = uuid.uuid4().hex[:16]
+    cover_id = _new_cover_id()
     image_id = await run_in_threadpool(cover_store.put_image, stores.images, cover_id, png)
     doc = {
-        "id": cover_id, "book_id": book_id, "type": type, "status": "published",
-        "published_at": datetime.now(UTC), "source": "uploaded", "image_id": image_id,
-        "url": f"/cover-images/{image_id}.png", "color": color,
-        "theme": theme_for(color).model_dump(), "options": {},
-        "filename": file.filename,
+        "id": cover_id, "book_id": book_id, "type": type, "source": "uploaded",
+        "options": {}, **_published(), **_image_fields(image_id, color),
     }
-    doc = await run_in_threadpool(cover_store.insert, stores.covers, doc)
-    await _sync_entry(stores, book_id, doc)
+    doc, _ = await asyncio.gather(
+        run_in_threadpool(cover_store.insert, stores.covers, doc),
+        _sync_entry(stores, book_id, doc, new=True),
+    )
     return _response(doc, book.slug)
 
 

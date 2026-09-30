@@ -159,15 +159,20 @@ def book_id(books: Collection, slug: str) -> ObjectId | None:
     return doc["_id"] if doc else None
 
 
-def put_cover_entry(books: Collection, book_id: ObjectId, entry: GeneratedCover) -> None:
-    """Replace the entry with ``entry.id``, or append it if the book has none."""
+def put_cover_entry(
+    books: Collection, book_id: ObjectId, entry: GeneratedCover, *, new: bool = False
+) -> None:
+    """Replace the entry with ``entry.id``, or append it if the book has none.
+
+    ``new`` says the cover has never been on the book, which saves the replace.
+    """
     now = datetime.now(UTC)
     value = entry.model_dump()
-    replaced = books.update_one(
+    replaced = None if new else books.update_one(
         {"_id": book_id, "generated_covers.id": entry.id},
         {"$set": {"generated_covers.$": value, "updated_at": now}},
     )
-    if not replaced.matched_count:
+    if not (replaced and replaced.matched_count):
         books.update_one(
             {"_id": book_id}, {"$push": {"generated_covers": value}, "$set": {"updated_at": now}}
         )

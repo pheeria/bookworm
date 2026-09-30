@@ -4,9 +4,11 @@ Generation runs for real but offline: conftest makes the deterministic brief the
 director and clears the image key, so the artwork falls back to a procedural motif.
 """
 
+import io
 import json
 
 import pytest
+from PIL import Image, ImageDraw
 
 from books.db import SEED
 from books.models import Book, GeneratedCover
@@ -241,23 +243,19 @@ def test_bad_requests_are_422(client):
 # --- Uploads ---
 
 
-def _image(color="#1b3a8c", fmt="JPEG", size=(300, 450)) -> bytes:
-    import io
-
-    from PIL import Image, ImageDraw
-
-    img = Image.new("RGB", size, color)
+def _image(color="#1b3a8c", fmt="JPEG") -> bytes:
+    img = Image.new("RGB", (300, 450), color)
     ImageDraw.Draw(img).rectangle((40, 60, 260, 120), fill="#f4f1e8")  # a title panel
     out = io.BytesIO()
     img.save(out, format=fmt)
     return out.getvalue()
 
 
-def upload(client, title=KIWI_HARDCOVER["title"], type="suspense", data=None, name="cover.jpg"):
+def upload(client, title=KIWI_HARDCOVER["title"], type="suspense", data=None):
     return client.post(
         "/covers/upload",
         data={"title": title, "type": type},
-        files={"file": (name, data if data is not None else _image(), "image/jpeg")},
+        files={"file": ("cover", data or _image())},
     )
 
 
@@ -267,7 +265,8 @@ def test_an_uploaded_cover_is_published_on_its_book(client):
     cover = response.json()
     assert (cover["book"], cover["type"], cover["status"]) == (SLUG, "suspense", "published")
     assert cover["published_at"]
-    assert cover["source"] == "uploaded" and cover["art_direction"] is None
+    # An upload is its own variant: no brief, geometry or request at all.
+    assert cover["source"] == "uploaded" and "art_direction" not in cover and "request" not in cover
     # The colour is the image's ground, and the theme follows from it.
     assert cover["color"] == "#1b3a8c"
     assert cover["theme"] == theme_for("#1b3a8c").model_dump()
@@ -284,9 +283,11 @@ def test_an_uploaded_cover_is_published_on_its_book(client):
 
 
 def test_a_light_upload_gets_a_light_theme(client):
-    cover = upload(client, data=_image("#f2ead3", fmt="PNG"), name="cover.png").json()
+    png = _image("#f2ead3", fmt="PNG")
+    cover = upload(client, data=png).json()
     assert cover["color"] == "#f2ead3"
     assert "fbf8f3" not in cover["theme"]["text"]  # dark type on a light page
+    assert client.get(cover["url"]).content == png  # a PNG upload is stored as sent
 
 
 def test_regenerating_an_upload_renders_it_afresh(client):
@@ -310,7 +311,21 @@ def test_upload_title_must_name_exactly_one_book(client):
 
 
 def test_upload_refuses_what_is_not_a_cover(client):
-    assert upload(client, data=b"not an image", name="notes.txt").status_code == 422
+    assert upload(client, data=b"not an image").status_code == 422
     assert upload(client, type="romance").status_code == 422
     assert client.post("/covers/upload", data={"title": "Alleinruhelage", "type": "heart"}).status_code == 422
     assert client.get(f"/books/{SLUG}/covers").json() == []  # nothing was stored
+
+
+def test_covers_stored_before_uploads_read_as_generated(client):
+    cover = create(client)
+    client.app.state.covers.update_one({"id": cover["id"]}, {"$unset": {"source": ""}})
+    [listed] = client.get(f"/books/{SLUG}/covers").json()
+    assert listed["source"] == "generated" and listed["art_direction"]
+
+
+def test_the_schema_tells_generated_and_uploaded_covers_apart(client):
+    schemas = client.get("/openapi.json").json()["components"]["schemas"]
+    generated, uploaded = schemas["GeneratedBookCover"], schemas["UploadedBookCover"]
+    assert {"art_direction", "geometry", "request", "seed"} <= set(generated["required"])
+    assert "art_direction" not in uploaded["properties"]

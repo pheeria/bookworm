@@ -156,9 +156,16 @@ with that title are a 409 that lists their slugs. The image is stored in GridFS
 as PNG (up to 20 MB, any format Pillow reads), its colour is sampled as the most
 common of five after reduction (the ground, on most covers), and the page theme
 is derived from that colour as for generated covers. An upload is a finished
-cover, so it is published at once, straight into the book's `generated_covers`,
-with `source: "uploaded"` and no brief; unpublish it like any other. Regenerating
-it replaces it with a generated cover of the same type.
+cover, so it is published at once, straight into the book's `generated_covers`;
+unpublish it like any other. Regenerating it replaces it with a generated cover of
+the same type. A PNG that is already RGB or RGBA is stored exactly as uploaded.
+
+Cover records come in two shapes, told apart by `source`. A `"generated"` cover
+carries the brief, geometry, notes, seed and effective `request`; an `"uploaded"`
+one has none of those fields, only the image, colour, theme, type and status that
+every cover has. The OpenAPI schema declares them as two variants, so a client
+that renders the brief should branch on `source`. (The short entries in a book's
+`generated_covers` look the same for both.)
 
 A published cover's entry follows the cover: a PATCH or a regeneration updates it.
 `color` is the brief's ground colour, and `theme` is derived from it by the same
