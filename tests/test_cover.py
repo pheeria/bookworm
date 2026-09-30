@@ -491,7 +491,9 @@ def test_the_brief_schema_only_admits_the_moods_layouts_and_faces():
     suspense = MOODS["suspense"]
     schema = brief_schema(suspense)
     props = schema.model_json_schema()["properties"]
-    assert props["template"]["enum"] == list(suspense.templates)
+    # One allowed value is a const in JSON Schema, several an enum; both hold the model.
+    template = props["template"]
+    assert template.get("enum", [template.get("const")]) == list(suspense.templates)
     assert props["type_family"]["enum"] == list(suspense.type_families)
     brief = fallback_direction("Ein Mord.", "Nacht", "A. Autor", "painterly", suspense).model_dump()
     assert schema.model_validate(brief)
@@ -518,3 +520,31 @@ def test_generate_accepts_a_mood(output_dir):
     from covers.moods import MOODS
 
     assert body["art_direction"]["type_family"] in MOODS["suspense"].type_families
+
+
+# --- The picture layout: type straight on the image ---
+
+
+@pytest.mark.parametrize(("sky", "expected"), [((30, 32, 60), "#fbf8f3"), ((235, 230, 215), "#2a2a2a")])
+def test_type_on_the_picture_takes_a_colour_that_reads_on_it(sky, expected):
+    from PIL import Image
+
+    from covers.formats import px
+
+    ctx = _ctx(template="picture", type_zone="top", artwork="generated", ink="#2a2a2a")
+    plan = artwork_plan(ctx.direction, ctx.geo)
+    ctx.artwork_image = Image.new("RGB", (px(plan[2], 60), px(plan[3], 60)), sky)
+    ctx.artwork_uri = "data:image/png;base64,"
+    svg = build_front(ctx)
+    assert f'fill="{expected}"' in svg
+    # Nothing is drawn behind the type: the only rect is the canvas ground.
+    assert svg.count("<rect") == 1
+
+
+def test_the_picture_zone_moves_the_type():
+    def title_top(zone):
+        svg = build_front(_ctx(template="picture", type_zone=zone, artwork="none"))
+        paths = re.findall(r'<path d="([^"]+)"', svg)
+        return _path_y_range(paths[1])[0]  # author, then title
+
+    assert title_top("top") < title_top("bottom")

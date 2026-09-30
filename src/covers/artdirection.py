@@ -31,6 +31,7 @@ Template = Literal[
     "didone_centre",
     "photo_duotone",
     "illustrated_full",
+    "picture",
 ]
 TEMPLATES: tuple[str, ...] = get_args(Template)
 
@@ -71,6 +72,7 @@ TEMPLATE_DEFAULT_FAMILY: dict[str, str] = {
     "didone_centre": "neoclassical",
     "photo_duotone": "geometric",
     "illustrated_full": "humanist",
+    "picture": "humanist",
 }
 
 #: Templates the fallback brief picks from, per register.
@@ -106,8 +108,18 @@ class ArtDirection(BaseModel):
             "rororo_band: full-bleed ground with a horizontal band holding the title. "
             "kiwi_flat: flat ground, left-aligned type stack in the upper half. "
             "type_block: display type filling the whole cover edge to edge, no imagery. "
-            "didone_centre: centred neoclassical setting with hairline rules."
+            "didone_centre: centred neoclassical setting with hairline rules. "
+            "picture: the picture runs across the whole cover and the type is set "
+            "straight onto it, with nothing behind the type, in the calm zone the "
+            "picture leaves for it (see type_zone)."
         )
+    )
+    type_zone: Literal["top", "bottom"] = Field(
+        default="top",
+        description=(
+            "picture only: where the author, title and genre sit on the picture. The "
+            "image prompt must keep that third calm -- sky, water, a plain wall."
+        ),
     )
     type_family: TypeFamily = Field(
         description=(
@@ -403,6 +415,7 @@ def fallback_direction(
         accent=palette.accent,
         secondary=palette.secondary,
         title_case=_title_case(family),
+        type_zone=("top", "bottom")[(seed >> 4) % 2],
         genre_line=genre,
         image_prompt=_FALLBACK_IMAGE_PROMPT.get(
             style, _FALLBACK_IMAGE_PROMPT[DEFAULT_STYLE]

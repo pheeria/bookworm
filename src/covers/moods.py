@@ -1,7 +1,8 @@
 """Moods: who a cover is for decides how it feels and what it may be set in.
 
 A mood fixes the register, steers the palette, and narrows the layouts and type
-families the brief may choose from. The art director still decides per book --
+families the brief may choose from. Every mood uses ``picture``, the layout that
+sets the type straight onto a full-bleed picture: no panels, bands or plates. The art director still decides per book --
 but inside these limits, so a thriller cannot come back in Garamond on pastel.
 
 Pure data, so the schema can name the moods without importing the directors.
@@ -38,7 +39,7 @@ MOODS: dict[str, Mood] = {
                 "intimate scenes, soft light, hand-mixed colour. Never cold, never "
                 "menacing."
             ),
-            templates=("illustrated_full", "photo_duotone"),
+            templates=("picture",),
             type_families=("humanist", "literary_serif", "garalde", "neoclassical"),
             tones=("warm", "charmant", "romantisch", "zart", "intim", "heiter"),
         ),
@@ -51,7 +52,7 @@ MOODS: dict[str, Mood] = {
                 "figure or a withheld detail. The cover should promise a threat, not "
                 "explain it."
             ),
-            templates=("photo_duotone", "rororo_band", "illustrated_full"),
+            templates=("picture",),
             type_families=("grotesk", "grotesk_condensed", "geometric", "slab"),
             tones=("dunkel", "spannung", "krimi", "nächtlich", "hart", "kalt"),
         ),
@@ -64,7 +65,7 @@ MOODS: dict[str, Mood] = {
                 "saturated and graphic; it has to stop the scroll at thumbnail size "
                 "and look like it belongs to now."
             ),
-            templates=("illustrated_full", "kiwi_flat", "type_block"),
+            templates=("picture",),
             type_families=("meta", "geometric", "grotesk_condensed", "neoclassical"),
             tones=("pop", "jung", "laut", "grell", "frisch", "traumhaft"),
         ),
@@ -77,7 +78,7 @@ MOODS: dict[str, Mood] = {
                 "carries the cover, colour is flat and few, imagery abstract if any. "
                 "Serious without being dull."
             ),
-            templates=("type_block", "kiwi_flat", "didone_centre"),
+            templates=("picture",),
             type_families=("garalde", "literary_serif", "didone", "grotesk", "meta"),
             tones=("sachlich", "ernst", "literarisch", "klar", "essay", "politisch"),
         ),

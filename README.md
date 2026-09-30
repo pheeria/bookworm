@@ -172,7 +172,14 @@ alone:
 
 The image model paints only the picture. The image prompt follows the house master
 format -- story, motif, twist, composition, colour, style, respect, avoid -- without
-the typography, and tells the model where the layout will set the type. The
+the typography, and tells the model which third to keep calm for the type.
+
+Book covers use one layout, `picture`: the picture is the whole cover and the type
+is set straight onto it -- no panel, band or plate behind it. Each concept picks a
+`type_zone`, `top` or `bottom`; author, title and genre sit there, the publisher
+line small at the foot. Each line's colour is chosen against the pixels actually
+under it: the palette's ink where it reads, cream or near-black type where it
+does not. The
 Typo-Daten are then set exactly as vector type. A title the Buchkern rates
 "ungeeignet" for the requested type still gets a cover, with a note saying so.
 Without Claude credentials every step falls back to the plain brief.
@@ -302,6 +309,7 @@ rather than a default baked into the prompt.
 | Template | Idiom |
 |---|---|
 | `illustrated_full` | The picture runs across the whole cover; the type sits in a panel over it. The layout for an illustrated cover. |
+| `picture` | The picture runs across the whole cover and the type is set straight onto it, in the calm top or bottom third, with nothing behind it. The layout every book cover uses. |
 | `photo_duotone` | Artwork across the upper two thirds, type below. |
 | `kiwi_flat` | Flat ground, left-aligned type stack in the upper half, artwork below. |
 | `rororo_band` | Full-bleed ground with a horizontal band carrying the title. |

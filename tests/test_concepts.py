@@ -41,20 +41,20 @@ CORE = {
 }
 
 
-def _concept(motif: str, template: str, family: str, ground: str) -> dict:
+def _concept(motif: str, zone: str, family: str, ground: str) -> dict:
     return {
         "motif": motif, "twist": "a paint roller left mid-stroke", "composition": "low angle",
-        "colour": "ochre, teal, off-white", "mode": None, "template": template,
-        "type_family": family, "title_case": "title", "ground": ground, "ink": "#1a1a18",
+        "colour": "ochre, teal, off-white", "mode": None, "template": "picture",
+        "type_zone": zone, "type_family": family, "title_case": "title", "ground": ground, "ink": "#1a1a18",
         "accent": "#c2703f", "secondary": "#89a8a0", "why": "Haus · Rolle · Ocker · Herz",
     }
 
 
 CONCEPTS = {
     "concepts": [
-        _concept("a half-painted wooden house", "illustrated_full", "humanist", "#e8c86a"),
-        _concept("two ashtrays on a veranda rail", "photo_duotone", "garalde", "#cfe0b4"),
-        _concept("an overgrown garden gate", "illustrated_full", "literary_serif", "#f2c9c4"),
+        _concept("a half-painted wooden house", "top", "humanist", "#e8c86a"),
+        _concept("two ashtrays on a veranda rail", "bottom", "garalde", "#cfe0b4"),
+        _concept("an overgrown garden gate", "top", "literary_serif", "#f2c9c4"),
     ],
     "respect": "none",
     "avoid": "none",
@@ -123,7 +123,8 @@ def test_a_cover_rests_on_the_researched_core_and_a_concept(client, claude):
 
     # The concept, not the fallback, made the cover.
     assert cover["art_direction_meta"]["source"] == "concept"
-    assert cover["art_direction"]["template"] == "illustrated_full"
+    assert cover["art_direction"]["template"] == "picture"
+    assert cover["art_direction"]["type_zone"] == "top"
     assert cover["art_direction"]["type_family"] == "humanist"
     assert cover["color"] == "#e8c86a"
     assert cover["concept"] == 0 and len(cover["concepts"]["concepts"]) == 3
@@ -132,7 +133,8 @@ def test_a_cover_rests_on_the_researched_core_and_a_concept(client, claude):
 
     prompt = cover["art_direction"]["image_prompt"]
     assert "Motif: a half-painted wooden house" in prompt
-    assert covers_concepts.TYPE_ZONES["illustrated_full"] in prompt
+    assert covers_concepts.zone_text("picture", "top") in prompt
+    assert "upper third" in prompt and "nothing behind them" in prompt
     assert "no text of any kind" in prompt and '"Alleinruhelage"' not in prompt
 
 
@@ -159,7 +161,8 @@ def test_an_alternative_renders_without_new_concepts(client, claude):
     ).json()
     assert kinds(claude).count("concepts") == 1  # the stored ones were used
     assert again["concept"] == 1
-    assert again["art_direction"]["template"] == "photo_duotone"
+    assert again["art_direction"]["type_zone"] == "bottom"
+    assert again["art_direction"]["type_family"] == "garalde"
     assert again["color"] == "#cfe0b4"
     # A stored concept belongs to its type.
     other = client.post(

@@ -52,6 +52,21 @@ TYPE_ZONES = {
     "type_block": "no image; the type fills the cover",
 }
 
+#: ``picture`` sets the type straight onto the image, in the zone the concept picks.
+_PICTURE_ZONE = (
+    "the author, title and genre will be set directly onto the picture across the {third} "
+    "third, with nothing behind them: keep that area calm and even -- open sky, water, "
+    "mist, a plain wall, soft shadow -- with no objects, faces or busy detail in it, and "
+    "the subject in the rest of the frame; a small publisher line sits at the bottom edge"
+)
+
+
+def zone_text(template: str, type_zone: str = "top") -> str:
+    """What the image prompt says about where the type will go."""
+    if template == "picture":
+        return _PICTURE_ZONE.format(third="upper" if type_zone == "top" else "lower")
+    return TYPE_ZONES[template]
+
 
 class Concept(BaseModel):
     motif: str = Field(description="Motif, in English, concrete and visible.")
@@ -60,6 +75,9 @@ class Concept(BaseModel):
     colour: str = Field(description="Palette, in English: 2-3 named colours.")
     mode: Literal["a", "b", "c"] | None = Field(description="DISKURS only: the mode; otherwise null.")
     template: str
+    type_zone: Literal["top", "bottom"] = Field(
+        description="picture: where the type sits on the image -- the calm third it keeps."
+    )
     type_family: str
     title_case: Literal["upper", "title", "as_is"]
     ground: str = Field(pattern=HEX, description="Ground colour of the cover, hex.")
@@ -162,7 +180,11 @@ async def write_concepts(core: BookCore, mood: Mood, *, publisher: str) -> Conce
 
     if (claude := client()) is None:
         return None
-    zones = "\n".join(f"  {t}: {TYPE_ZONES[t]}" for t in mood.templates)
+    zones = "\n".join(
+        f"  {t}: " + (zone_text(t, "top") + " (type_zone top; bottom: the same in the lower third)"
+                      if t == "picture" else TYPE_ZONES[t])
+        for t in mood.templates
+    )
     content = (
         f"BUCHKERN:\n{_brief(core)}\n\nPROFIL:\n{_profile(mood)}\n\nKONSTANTEN:\n"
         f"Niemals im Bild: {CONSTANTS}."
@@ -198,7 +220,7 @@ def image_prompt(core: BookCore, mood: Mood, concept: Concept, concepts: Concept
         "Book cover artwork, print-ready, with no text of any kind: the typography is "
         f"set separately. Story: {core.place_and_time}, the mood is {', '.join(core.tone)}. "
         f"Motif: {concept.motif}. Twist: {concept.twist}. "
-        f"Composition: {concept.composition}; {TYPE_ZONES[concept.template]}. "
+        f"Composition: {concept.composition}; {zone_text(concept.template, concept.type_zone)}. "
         f"Colour: {concept.colour}. Style: {style}.{respect} Avoid: {avoid}."
     )
 
@@ -221,6 +243,7 @@ def to_direction(core: BookCore, mood: Mood, concepts: Concepts, index: int = 0)
         accent=concept.accent,
         secondary=concept.secondary,
         title_case=concept.title_case,
+        type_zone=concept.type_zone,
         genre_line=core.typography.genre,
         image_prompt=image_prompt(core, mood, concept, concepts),
         rationale=concept.why,

@@ -95,6 +95,7 @@ async def create_cover(
 
     notes: list[str] = []
     artwork_uri = None
+    artwork_image = None
     art_meta: dict | None = None
 
     plan = artwork_plan(direction, geo)
@@ -124,6 +125,7 @@ async def create_cover(
                     update={"motif": DRAWN_MOTIFS[seed % len(DRAWN_MOTIFS)]}
                 )
         else:
+            artwork_image = art.image
             artwork_uri = await asyncio.to_thread(imagegen.to_data_uri, art.image)
             art_meta = dict(art.meta)
             art_meta["placement_mm"] = [round(v, 2) for v in plan]
@@ -161,6 +163,7 @@ async def create_cover(
         content=content,
         seed=seed,
         artwork_uri=artwork_uri,
+        artwork_image=artwork_image,
         marks=marks,
     )
 

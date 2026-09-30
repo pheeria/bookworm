@@ -10,11 +10,12 @@ eye aligns to at display sizes.
 
 from dataclasses import asdict, dataclass
 from functools import cached_property
+from typing import Any
 
 from . import motifs
 from .artdirection import ArtDirection
 from .formats import Geometry
-from .palettes import Palette, contrasting_ink
+from .palettes import Palette, contrasting_ink, luminance
 from .svg import n as _n
 from .svg import rect as _rect
 from .typography import TextBlock, face, fit_display, umlaut_leading
@@ -39,6 +40,9 @@ class Ctx:
     content: Content
     seed: int
     artwork_uri: str | None = None
+    #: The artwork itself (a PIL image covering the artwork plan), so type set on
+    #: it can take its colour from what is actually underneath.
+    artwork_image: Any = None
     marks: bool = False
 
     @cached_property
@@ -151,7 +155,7 @@ def artwork_plan(direction: ArtDirection, geo: Geometry) -> Rect | None:
         return (0.0, top, cw, ch - top)
     if t == "didone_centre":
         return (b + m, b + ph * 0.28, pw - 2 * m, ph * 0.40)
-    return (0.0, 0.0, cw, ch)  # rororo_band, illustrated_full: full bleed
+    return (0.0, 0.0, cw, ch)  # rororo_band, illustrated_full, picture: full bleed
 
 
 def _artwork_or_motif(ctx: Ctx, rect: Rect | None) -> str:
@@ -665,6 +669,95 @@ def _front_illustrated_full(ctx: Ctx) -> str:
     return "".join(out)
 
 
+#: Light and dark type for a picture the palette's ink does not read on.
+_LIGHT, _DARK = "#fbf8f3", "#161412"
+
+
+def _ground_under(ctx: Ctx, rect: Rect) -> str:
+    """The average colour of the artwork under ``rect`` (mm), or the palette's ground."""
+    img, plan = ctx.artwork_image, artwork_plan(ctx.direction, ctx.geo)
+    if img is None or plan is None:
+        return ctx.palette.ground
+    px, py, pw, ph = plan
+    x, y, w, h = rect
+    sx, sy = img.width / pw, img.height / ph
+    box = (
+        max(0, int((x - px) * sx)), max(0, int((y - py) * sy)),
+        min(img.width, int((x + w - px) * sx)), min(img.height, int((y + h - py) * sy)),
+    )
+    if box[2] <= box[0] or box[3] <= box[1]:
+        return ctx.palette.ground
+    r, g, b = img.crop(box).convert("RGB").resize((1, 1), 4).getpixel((0, 0))  # 4: BOX
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+
+def _ink_on(ground: str, preferred: str) -> str:
+    """``preferred`` where it reads on ``ground``; otherwise light or dark type."""
+    if abs(luminance(preferred) - luminance(ground)) >= 0.4:
+        return preferred
+    return contrasting_ink(ground, _LIGHT, _DARK)
+
+
+def _front_picture(ctx: Ctx) -> str:
+    """The picture is the whole cover; the type is set straight onto it.
+
+    No panel, band or plate: the image prompt keeps a third of the picture calm for
+    the type (``type_zone``), and each line takes a colour that reads on the pixels
+    actually under it -- the palette's own ink where it does, light or dark type
+    where it does not. The imprint sits small at the foot, as on the house covers.
+    """
+    g, d, c, p = ctx.geo, ctx.direction, ctx.content, ctx.palette
+    b, pw, ph, m = g.bleed_mm, g.panel_w_mm, g.panel_h_mm, ctx.margin
+    cw = g.front_bleed_w_mm
+    fam = d.type_family
+    out = [_artwork_or_motif(ctx, artwork_plan(d, g))]
+
+    centre, measure = b + pw / 2, pw - 2 * m
+    author_size, genre_size, imprint_size = pw * 0.046, pw * 0.032, pw * 0.024
+    title = fit_display(
+        cased(c.title, d.title_case),
+        fam,
+        max_width=measure,
+        max_height=ph * 0.24,
+        max_lines=3,
+        leading=0.98,
+        tracking=-0.01,
+    )
+    fd = face(fam, "display")
+    title_h = title.height + fd.cap_height * title.size
+    stack_h = author_size * 1.9 + title_h + genre_size * 2.2
+
+    imprint_top = b + ph - m * 0.9 - imprint_size
+    top = b + m * 1.1 if d.type_zone == "top" else imprint_top - m * 1.4 - stack_h
+    ink = _ink_on(_ground_under(ctx, (0, top - m * 0.4, cw, stack_h + m * 0.8)), p.ink)
+    accent = p.accent if abs(luminance(p.accent) - luminance(ink)) < 0.4 else ink
+
+    frag, author_base = draw_label(
+        c.author, fam, author_size, x=centre, cap_top=top, align="center",
+        fill=ink, tracking=0.08, weight="bold",
+    )
+    out.append(frag)
+    frag, title_base = draw_block(
+        title, fam, x=centre, cap_top=author_base + author_size * 0.9, align="center", fill=ink,
+    )
+    out.append(frag)
+    frag, _ = draw_label(
+        c.genre_line, fam, genre_size, x=centre, cap_top=title_base + genre_size * 1.2,
+        align="center", fill=accent, tracking=0.06, weight="italic",
+    )
+    out.append(frag)
+
+    imprint_ink = _ink_on(
+        _ground_under(ctx, (0, imprint_top - m * 0.3, cw, imprint_size + m * 0.6)), p.ink
+    )
+    frag, _ = draw_label(
+        c.imprint.upper(), fam, imprint_size, x=centre, cap_top=imprint_top,
+        align="center", fill=imprint_ink, tracking=0.2, weight="bold",
+    )
+    out.append(frag)
+    return "".join(out)
+
+
 FRONT_TEMPLATES = {
     "kiwi_flat": _front_kiwi_flat,
     "rororo_band": _front_rororo_band,
@@ -672,6 +765,7 @@ FRONT_TEMPLATES = {
     "didone_centre": _front_didone_centre,
     "photo_duotone": _front_photo_duotone,
     "illustrated_full": _front_illustrated_full,
+    "picture": _front_picture,
 }
 
 
