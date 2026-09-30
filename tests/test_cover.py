@@ -393,9 +393,9 @@ def test_genre_guess_defaults_to_roman():
 def cors_client(request):
     if request.param == "covers":
         return client
-    from bookworm.main import app as bookworm_app
+    from bookworm.main import create_app
 
-    return TestClient(bookworm_app)
+    return TestClient(create_app())
 
 
 def _preflight(client, origin: str):
@@ -476,3 +476,45 @@ def test_response_carries_style_and_director(output_dir):
     assert body["style"] == "typographic"
     assert body["director"] == "none"
     assert body["suggestions"]["genre_line"]["source"] == "fallback"
+
+
+# --- Moods ---
+
+
+def test_the_brief_schema_only_admits_the_moods_layouts_and_faces():
+    """The directors ask the model for this schema, so it cannot stray."""
+    import pydantic
+
+    from covers.artdirection import ArtDirection, brief_schema
+    from covers.moods import MOODS
+
+    suspense = MOODS["suspense"]
+    schema = brief_schema(suspense)
+    props = schema.model_json_schema()["properties"]
+    assert props["template"]["enum"] == list(suspense.templates)
+    assert props["type_family"]["enum"] == list(suspense.type_families)
+    brief = fallback_direction("Ein Mord.", "Nacht", "A. Autor", "painterly", suspense).model_dump()
+    assert schema.model_validate(brief)
+    with pytest.raises(pydantic.ValidationError):
+        schema.model_validate({**brief, "type_family": "garalde"})
+    assert brief_schema() is ArtDirection
+
+
+def test_the_mood_is_named_in_the_prompt():
+    from covers.moods import MOODS
+
+    prompt = system_prompt("painterly", MOODS["suspense"])
+    assert "crime, thriller" in prompt
+    assert "Who this cover is for" not in system_prompt("painterly")
+
+
+def test_generate_accepts_a_mood(output_dir):
+    body = client.post(
+        "/generate",
+        json={"text": "Ein Mord im Hafen.", "title": "Nacht", "author": "A. Autor",
+              "mood": "suspense", "director": "none", "dpi": 72},
+    ).json()
+    assert (body["mood"], body["style"]) == ("suspense", "painterly")
+    from covers.moods import MOODS
+
+    assert body["art_direction"]["type_family"] in MOODS["suspense"].type_families

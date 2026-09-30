@@ -10,7 +10,7 @@
 import asyncio
 import logging
 
-from . import imagegen
+from . import imagegen, settings
 from .artdirection import (
     DEFAULT_STYLE,
     DRAWN_MOTIFS,
@@ -22,6 +22,7 @@ from .artdirection import (
 from .director_openai import direct_openai, direct_prompt_from_text
 from .formats import geometry, px, resolve_format
 from .layout import Content, Ctx, artwork_plan
+from .moods import MOODS
 from .palettes import darkest_and_lightest
 from .render import render
 
@@ -42,8 +43,9 @@ async def create_cover(
     artwork: str | None = None,
     motif: str | None = None,
     genre_line: str | None = None,
-    style: str = DEFAULT_STYLE,
-    director: str = "claude",
+    mood: str | None = None,
+    style: str | None = None,
+    director: str | None = None,
     treatment: str = "none",
     image_quality: str | None = None,
     seed: int | None = None,
@@ -52,18 +54,22 @@ async def create_cover(
     fmt = resolve_format(format)
     geo = geometry(fmt, dpi=dpi)
 
+    profile = MOODS[mood] if mood else None
+    style = style or (profile.style if profile else DEFAULT_STYLE)
+    director = director or settings.director()
+
     if director == "openai":
-        direction, ad_meta = await direct_openai(text, title, author, style=style)
+        direction, ad_meta = await direct_openai(text, title, author, style=style, mood=profile)
     elif director == "none":
         # No text model at all: the deterministic brief decides everything except
         # the picture, whose prompt is composed locally from the book's own words.
-        direction = fallback_direction(text, title, author, style)
+        direction = fallback_direction(text, title, author, style, profile)
         direction = direction.model_copy(
             update={"image_prompt": direct_prompt_from_text(text, style)}
         )
         ad_meta = {"source": "none", "model": None, "style": style}
     else:
-        direction, ad_meta = await direct(text, title, author, style=style)
+        direction, ad_meta = await direct(text, title, author, style=style, mood=profile)
     direction = apply_overrides(
         direction,
         template=template,
@@ -161,6 +167,7 @@ async def create_cover(
         "geometry": geo.to_dict(),
         "content": content.summary(),
         "suggestions": suggestions,
+        "mood": mood,
         "style": style,
         "director": director,
         "seed": seed,

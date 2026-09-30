@@ -248,6 +248,13 @@ async def test_openai_director_produces_the_same_brief_shape(monkeypatch):
     assert captured["text_format"] is ArtDirection
     assert "ILLUSTRATED AND CHARMING" in captured["instructions"]
 
+    # With a mood, the model is asked for the brief narrowed to that mood.
+    from covers.artdirection import brief_schema
+    from covers.moods import MOODS
+
+    await direct_openai("Ein Mord.", "Nacht", "A. Autor", style="painterly", mood=MOODS["suspense"])
+    assert captured["text_format"] is brief_schema(MOODS["suspense"])
+
 
 async def test_openai_director_degrades_without_a_key(monkeypatch):
     from covers.director_openai import direct_openai

@@ -3,12 +3,17 @@
     POST   /books/{slug}/covers                   generate a draft
     GET    /books/{slug}/covers                   list, filter by status and type
     GET    /books/{slug}/covers/{id}
-    PATCH  /books/{slug}/covers/{id}              type, color, theme
-    POST   /books/{slug}/covers/{id}/regenerate   re-render with merged options
+    PATCH  /books/{slug}/covers/{id}              color, theme
+    POST   /books/{slug}/covers/{id}/regenerate   re-render, optionally for another type
     POST   /books/{slug}/covers/{id}/publish      put the short entry on the book
     POST   /books/{slug}/covers/{id}/unpublish
     DELETE /books/{slug}/covers/{id}
     GET    /cover-images/{image_id}.png       immutable; a new render gets a new URL
+
+Nothing about a cover is picked by hand. The reader type decides how it feels
+and what it may be set in (``covers.moods``); the publisher decides the
+formalities (``bookworm.houses``); the book supplies the words. A caller only
+chooses the type, and may rewrite the brief text.
 
 The book is read, never written, except for the short entry of a published cover
 in its ``generated_covers``, which is kept in step with the cover document.
@@ -17,7 +22,7 @@ in its ``generated_covers``, which is kept in step with the cover document.
 import asyncio
 import uuid
 from datetime import UTC, datetime
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, get_args
 
 from bson import ObjectId
 from bson.errors import InvalidId
@@ -29,14 +34,18 @@ from pydantic import BaseModel, Field, ValidationError
 from books import db as books_db
 from books.models import Book, BookTheme, Color, GeneratedCover, ReaderType
 from books.router import not_found
-from covers.formats import DEFAULT_FORMAT
-from covers.models import CoverRequest, CoverResult, FormatKey
+from covers.models import CoverRequest, CoverResult
+from covers.moods import MOODS
 from covers.palettes import luminance, rgb
 from covers.pipeline import create_cover
 
 from . import cover_store
+from .houses import formalities
 
 router = APIRouter(tags=["book covers"])
+
+# The book's reader types are the covers' moods; the two packages name them apart.
+assert set(get_args(ReaderType)) == set(MOODS), "ReaderType and covers.moods disagree"
 
 Status = Literal["draft", "published"]
 
@@ -44,23 +53,19 @@ Status = Literal["draft", "published"]
 # --- Requests and responses ---------------------------------------------------
 
 
-class CoverOptions(CoverRequest):
-    """Any cover field, overriding what the book supplies. All optional."""
-
-    text: str | None = Field(default=None, min_length=1, description="Defaults to the book's blurb.")
-    title: str | None = Field(default=None, min_length=1, description="Defaults to the book's title.")
-    author: str | None = Field(default=None, min_length=1, description="Defaults to the book's author.")
-    format: FormatKey | None = Field(
-        default=None, description="Defaults to the format matching the book's publisher and binding."
+class BookCoverRequest(BaseModel):
+    type: ReaderType = Field(description="Who the cover is for; decides its mood and faces.")
+    text: str | None = Field(
+        default=None, min_length=1,
+        description="The brief the cover is derived from. Defaults to the book's blurb.",
     )
 
 
-class BookCoverRequest(CoverOptions):
-    type: ReaderType
+class RegenerateRequest(BookCoverRequest):
+    type: ReaderType | None = Field(default=None, description="Defaults to the cover's own.")
 
 
 class CoverPatch(BaseModel):
-    type: ReaderType | None = None
     color: Color | None = None
     theme: BookTheme | None = None
 
@@ -74,42 +79,25 @@ class BookCover(CoverResult):
     url: str = Field(description="The front cover PNG.")
     color: str
     theme: BookTheme
-    options: dict[str, Any] = Field(description="What the caller set; regeneration reuses it.")
-    request: dict[str, Any] = Field(description="The effective request: book defaults plus options.")
+    options: dict[str, Any] = Field(description="What the caller set (the brief text); regeneration reuses it.")
+    request: dict[str, Any] = Field(description="The effective request: book, publisher, reader type and options.")
     created_at: datetime
     updated_at: datetime
 
 
 # --- Book details -> cover request --------------------------------------------
 
-#: (publisher, book format) -> covers format key, where covers knows the house.
-_HOUSE_FORMATS = {
-    ("Kiepenheuer & Witsch", "Hardcover"): "kiwi_hardcover",
-    ("Kiepenheuer & Witsch", "Paperback"): "kiwi_paperback",
-    ("Kiepenheuer & Witsch", "Taschenbuch"): "kiwi_taschenbuch",
-    ("Kiepenheuer & Witsch", "Klappenbroschur"): "kiwi_klappenbroschur",
-    ("Rowohlt", "Hardcover"): "rowohlt_hardcover",
-    ("Rowohlt", "Paperback"): "rowohlt_paperback",
-    ("Rowohlt", "Taschenbuch"): "rororo_taschenbuch",
-}
-
-
-def format_for(book: Book) -> str:
-    if key := _HOUSE_FORMATS.get((book.publisher, book.format)):
-        return key
-    return "din_a5_hardcover" if book.format == "Hardcover" else DEFAULT_FORMAT
-
 
 def book_defaults(book: Book) -> dict[str, Any]:
+    """The words from the book, the formalities from its publisher."""
     # The subtitle is worth briefing on only when it says more than the genre.
     adds = book.subtitle.strip().casefold() not in ("", book.category.strip().casefold())
     return {
         "text": f"{book.subtitle}. {book.blurb}" if adds else book.blurb,
         "title": book.title,
         "author": book.author,
-        "imprint": book.publisher,
         "genre_line": book.category,
-        "format": format_for(book),
+        **formalities(book),
     }
 
 
@@ -204,10 +192,12 @@ def _response(doc: dict, slug: str) -> BookCover:
     return BookCover.model_validate({**doc, "book": slug})
 
 
-async def _render(stores: Stores, cover_id: str, book: Book, options: dict) -> dict:
-    """Generate from the book's current details plus ``options``; store the PNG."""
+async def _render(
+    stores: Stores, cover_id: str, book: Book, type: str, options: dict
+) -> dict:
+    """Generate from the book's current details, for ``type``; store the PNG."""
     try:
-        request = CoverRequest.model_validate({**book_defaults(book), **options})
+        request = CoverRequest.model_validate({**book_defaults(book), **options, "mood": type})
     except ValidationError as exc:
         raise RequestValidationError(exc.errors()) from exc
     result = await create_cover(**request.model_dump())
@@ -241,7 +231,7 @@ async def create_book_cover(slug: str, body: BookCoverRequest, stores: Deps) -> 
     book_id, book = await _book(stores, slug)
     cover_id = uuid.uuid4().hex[:16]
     options = body.model_dump(exclude_unset=True, exclude={"type"})
-    fields = await _render(stores, cover_id, book, options)
+    fields = await _render(stores, cover_id, book, body.type, options)
     doc = {"id": cover_id, "book_id": book_id, "type": body.type, "status": "draft",
            "published_at": None, **fields}
     doc = await run_in_threadpool(cover_store.insert, stores.covers, doc)
@@ -276,14 +266,19 @@ async def edit_book_cover(slug: str, cover_id: str, body: CoverPatch, stores: De
 
 @router.post("/books/{slug}/covers/{cover_id}/regenerate", response_model=BookCover)
 async def regenerate_book_cover(
-    slug: str, cover_id: str, body: CoverOptions, stores: Deps
+    slug: str, cover_id: str, stores: Deps, body: RegenerateRequest | None = None
 ) -> BookCover:
+    body = body or RegenerateRequest()
     book_id, book = await _book(stores, slug)
     old = await _cover(stores, book_id, cover_id)
-    options = {**old["options"], **body.model_dump(exclude_unset=True)}
+    type = body.type or old["type"]
+    # Only the brief text carries over: covers made before the manual options went
+    # may still store them, and they must not come back through the stored copy.
+    options = {k: v for k, v in old["options"].items() if k == "text"}
+    options |= body.model_dump(exclude_unset=True, exclude={"type"})
     # The new image is stored before the old one goes, so a failed render
     # leaves the cover as it was.
-    fields = await _render(stores, cover_id, book, options)
+    fields = {**await _render(stores, cover_id, book, type, options), "type": type}
     doc = await _update(stores, book_id, cover_id, fields)
     await asyncio.gather(
         run_in_threadpool(cover_store.delete_image, stores.images, old["image_id"]),

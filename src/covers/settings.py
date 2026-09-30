@@ -20,6 +20,11 @@ def image_model() -> str:
     return os.environ.get("COVERS_IMAGE_MODEL", "gpt-image-2")
 
 
+def director() -> str:
+    """Who writes the brief when a request does not say: claude, openai or none."""
+    return os.environ.get("COVERS_DIRECTOR", "claude")
+
+
 def image_quality() -> str:
     return os.environ.get("COVERS_IMAGE_QUALITY", "high")
 

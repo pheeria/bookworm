@@ -16,11 +16,13 @@ from . import settings
 from .artdirection import (
     DEFAULT_STYLE,
     ArtDirection,
+    brief_schema,
     clip_prompt,
     degrade,
     system_prompt,
     user_prompt,
 )
+from .moods import Mood
 
 log = logging.getLogger("covers.director_openai")
 
@@ -30,6 +32,7 @@ async def direct_openai(
     author: str,
     *,
     style: str = DEFAULT_STYLE,
+    mood: Mood | None = None,
 ) -> tuple[ArtDirection, dict]:
     """Write the cover brief with an OpenAI text model.
 
@@ -43,7 +46,7 @@ async def direct_openai(
 
     if not os.environ.get("OPENAI_API_KEY"):
         log.info("OPENAI_API_KEY not set; using the deterministic brief")
-        return degrade(meta, "no OPENAI_API_KEY", text, title, author, style)
+        return degrade(meta, "no OPENAI_API_KEY", text, title, author, style, mood)
 
     import openai
 
@@ -53,9 +56,9 @@ async def direct_openai(
     try:
         response = await client.responses.parse(
             model=model,
-            instructions=system_prompt(style),
+            instructions=system_prompt(style, mood),
             input=user,
-            text_format=ArtDirection,
+            text_format=brief_schema(mood),
         )
         direction = response.output_parsed
         if direction is None:
@@ -69,7 +72,7 @@ async def direct_openai(
         return direction, meta
     except (openai.OpenAIError, ValueError, TypeError) as exc:
         log.warning("openai art direction failed (%s), using fallback", exc)
-        return degrade(meta, str(exc), text, title, author, style)
+        return degrade(meta, str(exc), text, title, author, style, mood)
 
 
 #: Prefix that carries the register into a locally-composed image prompt, used by

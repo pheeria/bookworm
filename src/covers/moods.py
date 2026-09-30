@@ -8,7 +8,7 @@ Pure data, so the schema can name the moods without importing the directors.
 """
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, get_args
 
 MoodKey = Literal["heart", "suspense", "trend", "discourse"]
 
@@ -83,3 +83,5 @@ MOODS: dict[str, Mood] = {
         ),
     )
 }
+
+assert set(MOODS) == set(get_args(MoodKey)), "MoodKey and MOODS name different moods"

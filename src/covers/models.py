@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 from .artdirection import STYLES, Artwork, Motif, Template, TypeFamily
 from .formats import DEFAULT_FORMAT, FORMATS
 from .imagegen import Quality, Treatment
+from .moods import MoodKey
 from .palettes import PALETTE_KEYS
 
 FormatKey = Literal[tuple(FORMATS)]  # type: ignore[valid-type]
@@ -40,19 +41,28 @@ class CoverRequest(BaseModel):
     genre_line: str | None = Field(
         default=None, description='Gattungsbezeichnung, e.g. "Roman".'
     )
-    style: Literal[STYLES] = Field(  # type: ignore[valid-type]
-        default="illustrated",
+    mood: MoodKey | None = Field(
+        default=None,
+        description=(
+            "Who the cover is for. Sets the register, steers the palette, and limits "
+            "the layouts and type families the brief may choose from. heart: "
+            "feeling, romance, family. suspense: crime and thriller. trend: BookTok "
+            "and bestseller. discourse: literary fiction, essays, non-fiction."
+        ),
+    )
+    style: Literal[STYLES] | None = Field(  # type: ignore[valid-type]
+        default=None,
         description=(
             "The register the cover is briefed in. illustrated: a drawn, figurative, "
             "warmly coloured picture carrying the cover. painterly: a painting, "
             "atmospheric and tonal. typographic: type-led and austere, imagery "
-            "abstract or absent."
+            "abstract or absent. Defaults to the mood's register, else 'illustrated'."
         ),
     )
-    director: Literal["claude", "openai", "none"] = Field(
-        default="claude",
+    director: Literal["claude", "openai", "none"] | None = Field(
+        default=None,
         description=(
-            "Who writes the brief. 'claude' and 'openai' both produce the same "
+            "Who writes the brief; defaults to COVERS_DIRECTOR, else 'claude'. 'claude' and 'openai' both produce the same "
             "structured brief; 'none' skips the text model entirely and composes "
             "the image prompt locally from your text, giving up the palette and "
             "genre line the brief would have decided. The brief is a small part of "
@@ -116,6 +126,7 @@ class CoverResult(BaseModel):
     suggestions: CopySuggestions = Field(
         description="Book copy this cover printed, tagged with who wrote it."
     )
+    mood: str | None = None
     style: str
     director: str
     seed: int

@@ -12,11 +12,13 @@ brief is derived from a hash of the input so the endpoint still returns a cover.
 import hashlib
 import logging
 import re
+from functools import cache
 from typing import Literal, get_args
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, create_model, model_validator
 
 from . import settings
+from .moods import MOODS, Mood
 from .palettes import PALETTES_BY_KEY, Palette, choose_palette
 from .typography import FAMILIES
 
@@ -56,6 +58,9 @@ Artwork = Literal["generated", "procedural", "none"]
 # The Literal has to be spelled out for Pydantic; keep it honest against the
 # faces typography actually offers.
 assert set(FAMILIES) == set(get_args(TypeFamily))
+for _mood in MOODS.values():
+    assert set(_mood.templates) <= set(TEMPLATES), _mood.key
+    assert set(_mood.type_families) <= set(FAMILIES), _mood.key
 
 #: The face each layout is designed around, used when a caller pins the template
 #: but not the typeface.
@@ -243,9 +248,33 @@ STYLES: tuple[str, ...] = tuple(STYLE_GUIDANCE)
 DEFAULT_STYLE = "illustrated"
 
 
-def system_prompt(style: str = DEFAULT_STYLE) -> str:
+def system_prompt(style: str = DEFAULT_STYLE, mood: Mood | None = None) -> str:
     guidance = STYLE_GUIDANCE.get(style, STYLE_GUIDANCE[DEFAULT_STYLE])
-    return f"{_SYSTEM_BASE}\n{guidance}"
+    prompt = f"{_SYSTEM_BASE}\n{guidance}"
+    if mood:
+        # The layouts and faces it allows are in the output schema, not here.
+        prompt += f"\n\nWho this cover is for: {mood.guidance}"
+    return prompt
+
+
+@cache
+def brief_schema(mood: Mood | None = None) -> type[ArtDirection]:
+    """The structured-output target: the brief, narrowed to what the mood allows.
+
+    Both directors ask the model for this schema, so a model cannot answer a
+    thriller with a layout or face outside the suspense mood in the first place.
+    """
+    if mood is None:
+        return ArtDirection
+    fields = ArtDirection.model_fields
+    return create_model(
+        f"ArtDirection_{mood.key}",
+        __base__=ArtDirection,
+        template=(Literal[mood.templates], Field(description=fields["template"].description)),
+        type_family=(
+            Literal[mood.type_families], Field(description=fields["type_family"].description)
+        ),
+    )
 
 
 def clip_prompt(text: str) -> tuple[str, bool]:
@@ -268,11 +297,12 @@ def user_prompt(title: str, author: str, text: str) -> str:
 
 
 def degrade(
-    meta: dict, reason: str, text: str, title: str, author: str, style: str
+    meta: dict, reason: str, text: str, title: str, author: str, style: str,
+    mood: Mood | None = None,
 ) -> tuple[ArtDirection, dict]:
     """Fall back to the deterministic brief, recording why."""
     meta.update(source="fallback", reason=reason)
-    return fallback_direction(text, title, author, style), meta
+    return fallback_direction(text, title, author, style, mood), meta
 
 
 def seed_from(*parts: str) -> int:
@@ -327,21 +357,36 @@ _FALLBACK_IMAGE_PROMPT = {
 }
 
 
+def _title_case(family: str) -> str:
+    """Uppercase suits the geometric and grotesk display faces; the rest set in title case."""
+    return "upper" if family in ("geometric", "grotesk", "grotesk_condensed") else "title"
+
+
+def _family_for(template: str, allowed: tuple[str, ...], seed: int) -> str:
+    """The template's own face if the mood allows it, else one the mood does."""
+    default = TEMPLATE_DEFAULT_FAMILY[template]
+    return default if default in allowed else allowed[(seed >> 24) % len(allowed)]
+
+
 def fallback_direction(
-    text: str, title: str, author: str, style: str = DEFAULT_STYLE
+    text: str, title: str, author: str, style: str = DEFAULT_STYLE,
+    mood: Mood | None = None,
 ) -> ArtDirection:
     """Deterministic brief, used when the model is unavailable."""
-    seed = seed_from(text, title, author, style)
+    seed = seed_from(text, title, author, style, *([mood.key] if mood else []))
     lowered = f"{title} {text}".lower()
 
     genre = _genre_from_text(lowered)
 
-    # Warm palettes for the illustrated register, the full set otherwise.
-    tone = ("charmant", "warm", "heiter") if style == "illustrated" else ()
+    if mood:
+        tone, candidates = mood.tones, mood.templates
+    else:
+        # Warm palettes for the illustrated register, the full set otherwise.
+        tone = ("charmant", "warm", "heiter") if style == "illustrated" else ()
+        candidates = STYLE_TEMPLATES.get(style, TEMPLATES)
     palette = choose_palette(seed, tone)
-    candidates = STYLE_TEMPLATES.get(style, TEMPLATES)
     template = candidates[(seed >> 8) % len(candidates)]
-    family = TEMPLATE_DEFAULT_FAMILY[template]
+    family = _family_for(template, mood.type_families, seed) if mood else TEMPLATE_DEFAULT_FAMILY[template]
     motif = DRAWN_MOTIFS[(seed >> 16) % len(DRAWN_MOTIFS)]
 
     return ArtDirection(
@@ -357,7 +402,7 @@ def fallback_direction(
         ink=palette.ink,
         accent=palette.accent,
         secondary=palette.secondary,
-        title_case="upper" if family in ("geometric", "grotesk", "grotesk_condensed") else "title",
+        title_case=_title_case(family),
         genre_line=genre,
         image_prompt=_FALLBACK_IMAGE_PROMPT.get(
             style, _FALLBACK_IMAGE_PROMPT[DEFAULT_STYLE]
@@ -372,6 +417,7 @@ async def direct(
     author: str,
     *,
     style: str = DEFAULT_STYLE,
+    mood: Mood | None = None,
 ) -> tuple[ArtDirection, dict]:
     """Produce a cover brief. Returns the brief and metadata about how it was made."""
     model = settings.claude_model()
@@ -387,7 +433,7 @@ async def direct(
         ac = anthropic.AsyncAnthropic()
     except Exception as exc:  # no credentials resolvable
         log.info("art direction falling back: %s", exc)
-        return degrade(meta, str(exc), text, title, author, style)
+        return degrade(meta, str(exc), text, title, author, style, mood)
 
     user = user_prompt(title, author, prompt_text)
 
@@ -395,15 +441,15 @@ async def direct(
         response = await ac.messages.parse(
             model=model,
             max_tokens=8000,
-            system=system_prompt(style),
+            system=system_prompt(style, mood),
             thinking={"type": "adaptive"},
             messages=[{"role": "user", "content": user}],
-            output_format=ArtDirection,
+            output_format=brief_schema(mood),
         )
         if response.stop_reason == "refusal":
             detail = getattr(response.stop_details, "category", None)
             log.warning("art direction refused (%s), using fallback", detail)
-            return degrade(meta, f"refusal:{detail}", text, title, author, style)
+            return degrade(meta, f"refusal:{detail}", text, title, author, style, mood)
         direction = response.parsed_output
         if direction is None:
             raise ValueError("model returned no parsed output")
@@ -414,7 +460,7 @@ async def direct(
         return direction, meta
     except (anthropic.APIError, ValueError, TypeError) as exc:
         log.warning("art direction failed (%s), using fallback", exc)
-        return degrade(meta, str(exc), text, title, author, style)
+        return degrade(meta, str(exc), text, title, author, style, mood)
 
 
 def apply_overrides(

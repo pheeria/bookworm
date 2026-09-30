@@ -1,8 +1,7 @@
 """Covers for books, against in-memory mongomock with GridFS.
 
-Generation runs for real but offline: the provider keys are cleared, so the brief
-is the deterministic fallback and the artwork a procedural motif. ``FAST`` keeps
-each render small.
+Generation runs for real but offline: conftest makes the deterministic brief the
+director and clears the image key, so the artwork falls back to a procedural motif.
 """
 
 import json
@@ -11,16 +10,18 @@ import pytest
 
 from books.db import SEED
 from books.models import Book, GeneratedCover
-from bookworm.book_covers import book_defaults, format_for, theme_for
+from bookworm.book_covers import book_defaults, theme_for
+from bookworm.houses import formalities
+from covers.artdirection import brief_schema, fallback_direction
+from covers.moods import MOODS
 
 SEEDED = json.loads(SEED.read_text(encoding="utf-8"))
 KIWI_HARDCOVER = SEEDED[0]  # Eva Menasse, Alleinruhelage
 SLUG = KIWI_HARDCOVER["slug"]
-FAST = {"dpi": 72, "director": "none", "artwork": "procedural"}
 
 
 def create(client, slug=SLUG, **body):
-    response = client.post(f"/books/{slug}/covers", json={"type": "heart", **FAST, **body})
+    response = client.post(f"/books/{slug}/covers", json={"type": "heart", **body})
     assert response.status_code == 201, response.text
     return response.json()
 
@@ -42,13 +43,46 @@ def test_defaults_come_from_the_book():
     assert d["text"] == book.blurb
 
 
-def test_format_falls_back_by_binding():
-    def fmt(publisher, format):
-        return format_for(Book.model_validate({**KIWI_HARDCOVER, "publisher": publisher, "format": format}))
+def test_the_publisher_fixes_the_formalities():
+    def house(publisher, format):
+        return formalities(Book.model_validate({**KIWI_HARDCOVER, "publisher": publisher, "format": format}))
 
-    assert fmt("Rowohlt", "Taschenbuch") == "rororo_taschenbuch"
-    assert fmt("S. FISCHER", "Hardcover") == "din_a5_hardcover"
-    assert fmt("S. FISCHER", "Paperback") == "kiwi_paperback"
+    assert house("Rowohlt", "Taschenbuch") == {"format": "rororo_taschenbuch", "imprint": "rororo"}
+    assert house("Rowohlt", "Hardcover")["imprint"] == "Rowohlt"
+    assert house("S. FISCHER", "Hardcover")["format"] == "din_a5_hardcover"
+    assert house("S. FISCHER", "Paperback")["format"] == "kiwi_paperback"
+    assert house("Unbekannt", "Paperback")["imprint"] == "Unbekannt"
+
+
+@pytest.mark.parametrize("type", list(MOODS))
+@pytest.mark.parametrize("book", SEEDED, ids=lambda b: b["slug"][:24])
+def test_every_book_briefs_inside_its_reader_type(type, book):
+    """No model: the deterministic brief for each book stays inside the mood."""
+    mood = MOODS[type]
+    d = book_defaults(Book.model_validate(book))
+    brief = fallback_direction(d["text"], d["title"], d["author"], mood.style, mood)
+    assert brief_schema(mood).model_validate(brief.model_dump())
+
+
+@pytest.mark.parametrize("type", list(MOODS))
+def test_the_reader_type_decides_mood_and_faces(client, type):
+    mood = MOODS[type]
+    book = SEEDED[list(MOODS).index(type) * 5]  # a different house for each
+    cover = create(client, slug=book["slug"], type=type)
+    assert cover["mood"] == type and cover["style"] == mood.style
+    assert cover["art_direction"]["template"] in mood.templates
+    assert cover["art_direction"]["type_family"] in mood.type_families
+    # The formalities are the publisher's, whatever the type.
+    assert cover["content"]["imprint"] == formalities(Book.model_validate(book))["imprint"]
+
+
+def test_only_the_type_and_text_can_be_chosen(client):
+    base = f"/books/{SLUG}/covers"
+    for extra in ({"template": "type_block"}, {"type_family": "fraktur"}, {"format": "kiwi_paperback"}):
+        # Unknown fields are ignored, not applied.
+        cover = create(client, **extra)
+        assert cover["options"] == {}
+    assert client.post(base, json={"type": "heart", "text": ""}).status_code == 422
 
 
 @pytest.mark.parametrize(("color", "dark"), [("#292512", True), ("#4b70b6", True), ("#b96d5a", False)])
@@ -67,7 +101,7 @@ def test_create_makes_a_draft_from_the_book(client):
     assert cover["status"] == "draft" and cover["book"] == SLUG
     assert cover["content"]["title"] == KIWI_HARDCOVER["title"]
     assert cover["geometry"]["format"]["key"] == "kiwi_hardcover"
-    assert cover["options"] == FAST  # only what the caller set
+    assert cover["options"] == {}  # the caller set nothing but the type
     assert cover["url"].startswith("/cover-images/")
 
     image = client.get(cover["url"])
@@ -81,11 +115,11 @@ def test_create_makes_a_draft_from_the_book(client):
     assert book_entries(client) == []
 
 
-def test_body_overrides_the_book(client):
-    cover = create(client, title="Anderer Titel", format="kiwi_paperback", type="suspense")
-    assert cover["content"]["title"] == "Anderer Titel"
-    assert cover["geometry"]["format"]["key"] == "kiwi_paperback"
-    assert cover["type"] == "suspense"
+def test_the_brief_text_can_be_rewritten(client):
+    cover = create(client, text="Eine Frau verschwindet im Nebel über dem Hafen.")
+    assert cover["options"] == {"text": "Eine Frau verschwindet im Nebel über dem Hafen."}
+    assert cover["request"]["text"] == cover["options"]["text"]
+    assert cover["content"]["title"] == KIWI_HARDCOVER["title"]  # still the book's
 
 
 def test_publish_puts_the_short_entry_on_the_book(client):
@@ -102,22 +136,22 @@ def test_patch_refreshes_a_published_entry(client):
     cover = create(client)
     client.post(f"/books/{SLUG}/covers/{cover['id']}/publish")
     patched = client.patch(
-        f"/books/{SLUG}/covers/{cover['id']}", json={"type": "discourse", "color": "#123456"}
+        f"/books/{SLUG}/covers/{cover['id']}", json={"color": "#123456"}
     ).json()
-    assert (patched["type"], patched["color"]) == ("discourse", "#123456")
+    assert patched["color"] == "#123456"
     assert patched["art_direction"] == cover["art_direction"]  # nothing regenerated
     [entry] = book_entries(client)
-    assert (entry["type"], entry["color"]) == ("discourse", "#123456")
+    assert entry["color"] == "#123456"
 
 
 def test_patch_of_a_draft_leaves_the_book_alone(client):
     cover = create(client)
-    client.patch(f"/books/{SLUG}/covers/{cover['id']}", json={"type": "trend"})
+    client.patch(f"/books/{SLUG}/covers/{cover['id']}", json={"color": "#123456"})
     assert book_entries(client) == []
 
 
-def test_regenerate_merges_options_and_reads_the_current_book(client):
-    cover = create(client, style="typographic")
+def test_regenerate_reads_the_current_book_and_can_change_type(client):
+    cover = create(client, type="heart", text="Ein Sommer am Meer.")
     client.post(f"/books/{SLUG}/covers/{cover['id']}/publish")
     old_image = client.get(cover["url"]).content
 
@@ -125,16 +159,21 @@ def test_regenerate_merges_options_and_reads_the_current_book(client):
     client.put(f"/books/{SLUG}", json={**KIWI_HARDCOVER, "title": "Neuer Titel"})
 
     again = client.post(
-        f"/books/{SLUG}/covers/{cover['id']}/regenerate", json={"palette": "kobalt"}
+        f"/books/{SLUG}/covers/{cover['id']}/regenerate", json={"type": "suspense"}
     ).json()
     assert again["id"] == cover["id"]
-    assert again["options"] == {**FAST, "style": "typographic", "palette": "kobalt"}
-    assert again["style"] == "typographic"
-    assert again["art_direction"]["ground"] == "#1B3A8C"
+    assert again["type"] == again["mood"] == "suspense"
+    assert again["style"] == MOODS["suspense"].style
+    assert again["art_direction"]["type_family"] in MOODS["suspense"].type_families
+    assert again["options"] == {"text": "Ein Sommer am Meer."}  # kept
     assert again["content"]["title"] == "Neuer Titel"
     assert client.get(again["url"]).content != old_image
     [entry] = book_entries(client)
-    assert entry["color"] == "#1b3a8c"
+    assert (entry["type"], entry["color"]) == ("suspense", again["color"])
+
+    # No body at all just re-renders as it is.
+    same = client.post(f"/books/{SLUG}/covers/{cover['id']}/regenerate")
+    assert same.status_code == 200 and same.json()["type"] == "suspense"
 
 
 def test_covers_survive_a_slug_rename(client):
@@ -196,5 +235,4 @@ def test_unknown_book_is_a_404(client):
 def test_bad_requests_are_422(client):
     base = f"/books/{SLUG}/covers"
     assert client.post(base, json={"type": "romance"}).status_code == 422
-    assert client.post(base, json={"type": "heart", **FAST, "format": "nope"}).status_code == 422
     assert client.patch(f"{base}/x", json={"color": "red"}).status_code == 422

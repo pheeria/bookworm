@@ -110,28 +110,39 @@ Tests run against `mongomock` in memory and never reach a real cluster.
 ## Book covers
 
 Covers made for a book live in their own `covers` collection, with their PNGs in
-GridFS (`cover_images`) in the same database, so they outlive a deploy. A cover is
-generated from the book's details, which it reads but never writes:
+GridFS (`cover_images`) in the same database, so they outlive a deploy.
 
-| Cover field | From the book |
+Nothing about a book cover is picked by hand. A request carries only the reader
+`type`, and optionally `text` to rewrite the brief; everything else follows from
+three sources:
+
+| Decided by | What |
 |---|---|
-| `text` | `blurb`, after the `subtitle` when that says more than the genre |
-| `title`, `author` | `title`, `author` |
-| `imprint` | `publisher` |
-| `genre_line` | `category` |
-| `format` | publisher and binding, e.g. KiWi + Hardcover → `kiwi_hardcover`; unknown houses fall back to `din_a5_hardcover` or `kiwi_paperback` |
+| The **reader type** (`covers/moods.py`) | Register, palette leaning, the layouts and type families the art director may choose from |
+| The **publisher** (`bookworm/houses.py`) | Trim format per binding, imprint wordmark (e.g. rororo for Rowohlt paperbacks) |
+| The **book** | Title, author, the blurb as the brief, `category` as the Gattungsbezeichnung |
 
-Any cover field in the request body overrides the book. `type` (`heart`,
-`suspense`, `trend`, `discourse`) is a label; style and every other choice are the
-caller's.
+| Type | Register | Layouts | Type families |
+|---|---|---|---|
+| `heart` | illustrated | illustrated_full, photo_duotone | humanist, literary_serif, garalde, neoclassical |
+| `suspense` | painterly | photo_duotone, rororo_band, illustrated_full | grotesk, grotesk_condensed, geometric, slab |
+| `trend` | illustrated | illustrated_full, kiwi_flat, type_block | meta, geometric, grotesk_condensed, neoclassical |
+| `discourse` | typographic | type_block, kiwi_flat, didone_centre | garalde, literary_serif, didone, grotesk, meta |
+
+The art director still chooses per book, inside those limits: the model is asked
+for a brief whose schema only admits the type's layouts and families, so it
+cannot stray, and the no-model fallback picks from the same lists. Who writes the brief, image
+quality and resolution are service settings (`COVERS_DIRECTOR`,
+`COVERS_IMAGE_QUALITY`), not per-cover choices. `/generate` takes the same `mood`
+for covers made outside a book, alongside its full set of overrides.
 
 | Method | Path | |
 |---|---|---|
 | `POST` | `/books/{slug}/covers` | Generate a draft. 201 |
 | `GET` | `/books/{slug}/covers` | Newest first; filter with `status` and `type` |
 | `GET` | `/books/{slug}/covers/{id}` | The full record: options, effective request, brief, geometry, notes |
-| `PATCH` | `/books/{slug}/covers/{id}` | `type`, `color`, `theme`, without regenerating |
-| `POST` | `/books/{slug}/covers/{id}/regenerate` | Re-render with new options merged over the stored ones, from the book as it is now |
+| `PATCH` | `/books/{slug}/covers/{id}` | `color`, `theme`, without regenerating |
+| `POST` | `/books/{slug}/covers/{id}/regenerate` | Re-render from the book as it is now; optionally for another `type` or `text` |
 | `POST` | `/books/{slug}/covers/{id}/publish` | Add `{id, type, url, color, theme}` to the book's `generated_covers` |
 | `POST` | `/books/{slug}/covers/{id}/unpublish` | Remove it again |
 | `DELETE` | `/books/{slug}/covers/{id}` | The cover, its image and its entry. 204 |

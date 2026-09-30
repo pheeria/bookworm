@@ -3,7 +3,9 @@
     uv run uvicorn bookworm.main:app --reload
 
 This module owns the process: it loads ``.env``, configures logging and CORS, and
-connects the books API to MongoDB. ``books`` and ``covers`` stay libraries; the covers made
+connects the books API to MongoDB -- but only for the served ``app``, which is
+built on first access. Importing the module, or calling :func:`create_app` as the
+tests do, reads no ``.env`` and so cannot pick up real provider keys. ``books`` and ``covers`` stay libraries; the covers made
 for books (:mod:`bookworm.book_covers`) are the one place they meet.
 """
 
@@ -62,8 +64,17 @@ def create_app(client_factory: Callable[[], MongoClient] = books_db.connect) -> 
     return app
 
 
-# Loaded here, for the served app only. Tests build their own with create_app()
-# after conftest has cleared the provider keys, and must not get them back.
-load_dotenv(Path(__file__).resolve().parents[2] / ".env")
-logging.basicConfig(level=covers_settings.log_level())
-app = create_app()
+_ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
+_served: FastAPI | None = None
+
+
+def __getattr__(name: str) -> FastAPI:
+    """``bookworm.main:app``, built when uvicorn first asks for it."""
+    global _served
+    if name != "app":
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    if _served is None:
+        load_dotenv(_ENV_FILE)
+        logging.basicConfig(level=covers_settings.log_level())
+        _served = create_app()
+    return _served
