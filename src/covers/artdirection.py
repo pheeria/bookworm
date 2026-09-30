@@ -18,8 +18,9 @@ from typing import Literal, get_args
 from pydantic import BaseModel, Field, create_model, model_validator
 
 from . import settings
+from .lettering import Ink, Lettering
 from .moods import MOODS, Mood
-from .palettes import PALETTES_BY_KEY, Palette, choose_palette
+from .palettes import HEX, PALETTES_BY_KEY, Palette, choose_palette
 from .typography import FAMILIES, TYPE_FAMILIES, describe
 
 log = logging.getLogger("covers.artdirection")
@@ -67,8 +68,6 @@ STYLE_TEMPLATES: dict[str, tuple[str, ...]] = {
     "typographic": ("type_block", "kiwi_flat", "rororo_band", "didone_centre"),
 }
 
-HEX = r"^#[0-9A-Fa-f]{6}$"
-
 #: How much of the input text is shown to the model.
 MAX_PROMPT_CHARS = 24_000
 
@@ -104,14 +103,14 @@ class ArtDirection(BaseModel):
             "didone_centre: centred neoclassical setting with hairline rules. "
             "picture: the picture runs across the whole cover and the type is set "
             "straight onto it, with nothing behind the type, in the calm zone the "
-            "picture leaves for it (see type_zone)."
+            "picture leaves for it (see lettering)."
         )
     )
-    type_zone: Literal["top", "bottom"] = Field(
-        default="top",
+    lettering: Lettering = Field(
+        default_factory=Lettering,
         description=(
-            "picture only: where the author, title and genre sit on the picture. The "
-            "image prompt must keep that third calm -- sky, water, a plain wall."
+            "picture only: where and how the author, title and genre are set on the "
+            "picture. The image prompt must keep that area calm -- sky, water, a plain wall."
         ),
     )
     type_family: TypeFamily = Field(description=_family_description(TYPE_FAMILIES))
@@ -397,7 +396,11 @@ def fallback_direction(
         accent=palette.accent,
         secondary=palette.secondary,
         title_case=_title_case(family),
-        type_zone=("top", "bottom")[(seed >> 4) % 2],
+        lettering=Lettering(
+            location=("top", "bottom")[(seed >> 4) % 2],
+            title_ink=Ink(color=palette.ink),
+            text_ink=Ink(color=palette.ink),
+        ),
         genre_line=genre,
         image_prompt=_FALLBACK_IMAGE_PROMPT.get(
             style, _FALLBACK_IMAGE_PROMPT[DEFAULT_STYLE]

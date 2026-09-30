@@ -10,7 +10,7 @@
 import asyncio
 import logging
 
-from . import imagegen, settings
+from . import imagegen, lettering, settings
 from .artdirection import (
     DEFAULT_STYLE,
     DRAWN_MOTIFS,
@@ -26,8 +26,31 @@ from .layout import Content, Ctx, artwork_plan
 from .moods import MOODS
 from .palettes import darkest_and_lightest
 from .render import render
+from .typography import TYPE_FAMILIES
 
 log = logging.getLogger("covers.pipeline")
+
+
+async def _adjust_lettering(
+    direction: ArtDirection, image, *, title: str, author: str,
+    families: tuple[str, ...], pinned_family: bool,
+) -> tuple[ArtDirection, dict]:
+    """The brief with its lettering confirmed or moved by a look at the painted picture."""
+    placed = await lettering.adjust(
+        image, direction.lettering, title=title, author=author, genre=direction.genre_line,
+        type_family=direction.type_family, title_case=direction.title_case, families=families,
+    )
+    if placed is None:
+        return direction, {"source": "plan"}
+    update: dict = {
+        "lettering": lettering.Lettering.model_validate(placed.model_dump()),
+        "title_case": placed.title_case,
+    }
+    if not pinned_family:
+        update["type_family"] = placed.type_family
+    # Re-validated, so the blackletter casing rule holds for the new face too.
+    adjusted = ArtDirection.model_validate({**direction.model_dump(), **update})
+    return adjusted, {"source": "vision", "note": placed.note}
 
 
 async def create_cover(
@@ -138,6 +161,12 @@ async def create_cover(
                 notes.append(
                     f"artwork is {art_meta['effective_dpi']} dpi native over its "
                     f"placement and was resampled up to {dpi} dpi; type stays vector"
+                )
+            if direction.template == "picture" and director == "claude":
+                direction, ad_meta["lettering"] = await _adjust_lettering(
+                    direction, art.image, title=title, author=author,
+                    families=profile.type_families if profile else TYPE_FAMILIES,
+                    pinned_family=type_family is not None,
                 )
 
     # The brief is the single source of truth for copy; record who wrote each

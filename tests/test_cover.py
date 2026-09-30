@@ -18,6 +18,7 @@ from covers.artdirection import (
 )
 from covers.formats import FORMATS, geometry, resolve_format
 from covers.layout import Content, Ctx, artwork_plan, build_front
+from covers.lettering import Ink, Lettering
 from covers.main import app
 from covers.typography import TYPE_FAMILIES, face, fit_display, umlaut_leading
 
@@ -531,7 +532,8 @@ def test_type_on_the_picture_takes_a_colour_that_reads_on_it(sky, expected):
 
     from covers.formats import px
 
-    ctx = _ctx(template="picture", type_zone="top", artwork="generated", ink="#2a2a2a")
+    ctx = _ctx(template="picture", artwork="generated", lettering=Lettering(
+        title_ink=Ink(color="#2a2a2a"), text_ink=Ink(color="#2a2a2a")))
     plan = artwork_plan(ctx.direction, ctx.geo)
     ctx.artwork_image = Image.new("RGB", (px(plan[2], 60), px(plan[3], 60)), sky)
     ctx.artwork_uri = "data:image/png;base64,"
@@ -543,11 +545,57 @@ def test_type_on_the_picture_takes_a_colour_that_reads_on_it(sky, expected):
 
 def test_the_picture_zone_moves_the_type():
     def title_top(zone):
-        svg = build_front(_ctx(template="picture", type_zone=zone, artwork="none"))
+        svg = build_front(_ctx(template="picture", lettering=Lettering(location=zone), artwork="none"))
         paths = re.findall(r'<path d="([^"]+)"', svg)
         return _path_y_range(paths[1])[0]  # author, then title
 
     assert title_top("top") < title_top("bottom")
+
+
+def _path_x_range(d: str) -> tuple[float, float]:
+    from fontTools.pens.boundsPen import BoundsPen
+    from fontTools.svgLib.path import parse_path
+
+    pen = BoundsPen(None)
+    parse_path(d, pen)
+    x_min, _, x_max, _ = pen.bounds
+    return x_min, x_max
+
+
+@pytest.mark.parametrize("location", ["left", "right"])
+def test_a_side_column_keeps_the_type_on_its_side(location):
+    ctx = _ctx(template="picture", artwork="none", title="Die Nacht der langen Schatten",
+               lettering=Lettering(location=location, size="large"))
+    svg = build_front(ctx)
+    middle = ctx.geo.bleed_mm + ctx.geo.panel_w_mm / 2
+    # Author, title lines and genre; the imprint (last) stays centred at the foot.
+    for d in re.findall(r'<path d="([^"]+)"', svg)[:-1]:
+        x_min, x_max = _path_x_range(d)
+        assert x_max < middle if location == "left" else x_min > middle
+
+
+def test_a_diagonal_title_is_rotated_and_the_rest_is_not():
+    svg = build_front(_ctx(template="picture", artwork="none",
+                           lettering=Lettering(location="diagonal", angle=-25)))
+    rotated = re.findall(r'<g transform="rotate\(-25 [^"]+">(.*?)</g>', svg)
+    assert len(rotated) == 1 and "<path" in rotated[0]
+    assert svg.count("<path") > rotated[0].count("<path")  # author, genre, imprint outside
+
+
+def test_a_title_gradient_is_one_gradient_across_its_lines():
+    ink = Ink(color="#ffd27a", gradient_to="#ff6a3d")
+    svg = build_front(_ctx(template="picture", artwork="none", ground="#14203a",
+                           title="Die Nacht der langen Schatten", lettering=Lettering(title_ink=ink)))
+    assert svg.count("<linearGradient") == 1
+    assert 'stop-color="#ffd27a"' in svg and 'stop-color="#ff6a3d"' in svg
+    assert svg.count('fill="url(#title-ink)"') >= 2
+
+
+def test_a_gradient_that_would_not_read_falls_back_to_one_colour():
+    ink = Ink(color="#1a1a2a", gradient_to="#20304a")  # dark on a dark ground
+    svg = build_front(_ctx(template="picture", artwork="none", ground="#14203a",
+                           lettering=Lettering(title_ink=ink)))
+    assert "<linearGradient" not in svg and 'fill="#fbf8f3"' in svg
 
 
 def test_each_moods_brief_describes_only_its_own_families():

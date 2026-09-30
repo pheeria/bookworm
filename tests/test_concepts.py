@@ -14,6 +14,7 @@ import pytest
 from books.db import SEED
 from covers import concepts as covers_concepts
 from covers.core import BookCore
+from covers.lettering import Lettering
 from covers.moods import MOODS
 
 SEEDED = json.loads(SEED.read_text(encoding="utf-8"))
@@ -45,7 +46,9 @@ def _concept(motif: str, zone: str, family: str, ground: str) -> dict:
     return {
         "motif": motif, "twist": "a paint roller left mid-stroke", "composition": "low angle",
         "colour": "ochre, teal, off-white", "mode": None, "template": "picture",
-        "type_zone": zone, "type_family": family, "title_case": "title", "ground": ground, "ink": "#1a1a18",
+        "lettering": {"location": zone, "size": "large", "title_ink": {"color": "#1a1a18"},
+                      "text_ink": {"color": "#1a1a18"}},
+        "type_family": family, "title_case": "title", "ground": ground, "ink": "#1a1a18",
         "accent": "#c2703f", "secondary": "#89a8a0", "why": "Haus · Rolle · Ocker · Herz",
     }
 
@@ -58,6 +61,15 @@ CONCEPTS = {
     ],
     "respect": "none",
     "avoid": "none",
+}
+
+
+PLACEMENT = {
+    "location": "diagonal", "align": "center", "size": "dominant", "angle": -24,
+    "title_ink": {"color": "#fff4d6", "gradient_to": "#f2b84b", "gradient": "down"},
+    "text_ink": {"color": "#fff4d6"},
+    "type_family": "garalde", "title_case": "title",
+    "note": "Der Himmel oben ist unruhig; die Diagonale folgt dem Dachfirst.",
 }
 
 
@@ -93,6 +105,9 @@ class _Claude:
         if schema is BookCore:
             self.calls.append(("core", kw))
             return SimpleNamespace(stop_reason="end_turn", parsed_output=BookCore.model_validate(CORE))
+        if schema.__name__ == "Placement":
+            self.calls.append(("lettering", kw))
+            return SimpleNamespace(stop_reason="end_turn", parsed_output=schema.model_validate(PLACEMENT))
         self.calls.append(("concepts", kw))
         mood = MOODS[schema.__name__.removeprefix("Concepts_")]
         return SimpleNamespace(stop_reason="end_turn", parsed_output=schema.model_validate(concepts_for(mood)))
@@ -124,7 +139,7 @@ def test_a_cover_rests_on_the_researched_core_and_a_concept(client, claude):
     # The concept, not the fallback, made the cover.
     assert cover["art_direction_meta"]["source"] == "concept"
     assert cover["art_direction"]["template"] == "picture"
-    assert cover["art_direction"]["type_zone"] == "top"
+    assert cover["art_direction"]["lettering"]["location"] == "top"
     assert cover["art_direction"]["type_family"] == "humanist"
     assert cover["color"] == "#e8c86a"
     assert cover["concept"] == 0 and len(cover["concepts"]["concepts"]) == 3
@@ -133,7 +148,7 @@ def test_a_cover_rests_on_the_researched_core_and_a_concept(client, claude):
 
     prompt = cover["art_direction"]["image_prompt"]
     assert "Motif: a half-painted wooden house" in prompt
-    assert covers_concepts.zone_text("picture", "top") in prompt
+    assert covers_concepts.zone_text("picture", Lettering(location="top")) in prompt
     assert "upper third" in prompt and "nothing behind them" in prompt
     assert "no text of any kind" in prompt and '"Alleinruhelage"' not in prompt
 
@@ -161,7 +176,7 @@ def test_an_alternative_renders_without_new_concepts(client, claude):
     ).json()
     assert kinds(claude).count("concepts") == 1  # the stored ones were used
     assert again["concept"] == 1
-    assert again["art_direction"]["type_zone"] == "bottom"
+    assert again["art_direction"]["lettering"]["location"] == "bottom"
     assert again["art_direction"]["type_family"] == "garalde"
     assert again["color"] == "#cfe0b4"
     # A stored concept belongs to its type.
@@ -200,3 +215,69 @@ def test_concepts_are_held_to_the_mood():
     bad = {**CONCEPTS, "concepts": [{**CONCEPTS["concepts"][0], "type_family": "slab"}]}
     with pytest.raises(pydantic.ValidationError):
         schema.model_validate(bad)
+
+
+@pytest.fixture
+def painted(monkeypatch):
+    """The image model, stubbed: a plain sky-blue picture of the requested size."""
+    from PIL import Image
+
+    from covers import imagegen
+
+    async def generate(prompt, hexes, *, target_w_px, target_h_px, **_kw):
+        img = Image.new("RGB", (target_w_px // 4, target_h_px // 4), (40, 60, 110))
+        return imagegen.Artwork(image=img, meta={"provider": "stub", "model": "stub",
+                                                 "native_px": list(img.size)})
+
+    monkeypatch.setattr(imagegen, "generate", generate)
+
+
+def test_the_painted_picture_decides_where_the_type_goes(client, claude, painted):
+    cover = client.post(f"/books/{SLUG}/covers", json={"type": "heart"}).json()
+    assert kinds(claude) == ["research", "core", "concepts", "lettering"]
+
+    # Claude saw the picture and the plan, and chose among the reader type's faces.
+    kw = claude[-1][1]
+    image, text = kw["messages"][0]["content"]
+    assert image["type"] == "image" and image["source"]["media_type"] == "image/jpeg"
+    assert "'location': 'top'" in text["text"] and "Alleinruhelage" in text["text"]
+    assert kw["output_format"].model_fields["type_family"].annotation.__args__ == MOODS["heart"].type_families
+
+    direction = cover["art_direction"]
+    assert direction["lettering"]["location"] == "diagonal"
+    assert direction["lettering"]["title_ink"]["gradient_to"] == "#f2b84b"
+    assert direction["type_family"] == "garalde"
+    assert cover["art_direction_meta"]["lettering"]["source"] == "vision"
+
+
+def test_without_the_look_the_planned_lettering_stands(client, claude, painted, monkeypatch):
+    from covers import lettering
+
+    async def unavailable(*_a, **_kw):
+        return None
+
+    monkeypatch.setattr(lettering, "adjust", unavailable)
+    cover = client.post(f"/books/{SLUG}/covers", json={"type": "heart"}).json()
+    assert cover["art_direction"]["lettering"]["location"] == "top"
+    assert cover["art_direction"]["type_family"] == "humanist"
+    assert cover["art_direction_meta"]["lettering"] == {"source": "plan"}
+
+
+def test_a_placement_is_held_to_the_mood():
+    import pydantic
+
+    from covers.lettering import placement_schema
+
+    schema = placement_schema(MOODS["heart"].type_families)
+    with pytest.raises(pydantic.ValidationError):
+        schema.model_validate({**PLACEMENT, "type_family": "slab"})
+    with pytest.raises(pydantic.ValidationError):
+        schema.model_validate({**PLACEMENT, "angle": -60})
+
+
+def test_concepts_stored_before_lettering_still_load():
+    old = {**CONCEPTS["concepts"][1], "type_zone": "bottom"}
+    del old["lettering"]
+    schema = covers_concepts.concepts_schema(MOODS["heart"])
+    parsed = schema.model_validate({**CONCEPTS, "concepts": [old]})
+    assert parsed.concepts[0].lettering.location == "bottom"

@@ -8,6 +8,7 @@ Type is placed off the cap line rather than the baseline, because that is what t
 eye aligns to at display sizes.
 """
 
+import math
 from dataclasses import asdict, dataclass
 from functools import cached_property
 from typing import Any
@@ -15,6 +16,7 @@ from typing import Any
 from . import motifs
 from .artdirection import ArtDirection
 from .formats import Geometry
+from .lettering import Ink
 from .palettes import Palette, contrasting_ink, luminance
 from .svg import n as _n
 from .svg import rect as _rect
@@ -691,70 +693,162 @@ def _ground_under(ctx: Ctx, rect: Rect) -> str:
     return f"#{r:02x}{g:02x}{b:02x}"
 
 
-def _ink_on(ground: str, preferred: str) -> str:
+def _ink_on(ground: str, preferred: str, contrast: float = 0.4) -> str:
     """``preferred`` where it reads on ``ground``; otherwise light or dark type."""
-    if abs(luminance(preferred) - luminance(ground)) >= 0.4:
+    if abs(luminance(preferred) - luminance(ground)) >= contrast:
         return preferred
     return contrasting_ink(ground, _LIGHT, _DARK)
+
+
+def _paint(ink: Ink, ground: str, box: Rect, uid: str) -> tuple[str, str]:
+    """The ``(defs, fill)`` for type in ``ink`` over ``box`` (mm) on ``ground``.
+
+    A gradient runs across the whole box, so a multi-line title shares one. Its
+    stops may sit a little closer to the ground than a solid colour, since the eye
+    reads the brighter end; where either would not read, the type falls back to one
+    colour that does.
+    """
+    if not ink.gradient_to or any(_ink_on(ground, c, 0.28) != c for c in ink.stops):
+        return "", _ink_on(ground, ink.color)
+    x, y, w, h = box
+    x2, y2 = {"down": (x, y + h), "across": (x + w, y), "diagonal": (x + w, y + h)}[ink.gradient]
+    defs = (
+        f'<defs><linearGradient id="{uid}" gradientUnits="userSpaceOnUse" '
+        f'x1="{_n(x)}" y1="{_n(y)}" x2="{_n(x2)}" y2="{_n(y2)}">'
+        f'<stop offset="0" stop-color="{ink.color}"/><stop offset="1" stop-color="{ink.gradient_to}"/>'
+        "</linearGradient></defs>"
+    )
+    return defs, f"url(#{uid})"
+
+
+#: How much of the panel height the title may take, per lettering size.
+_TITLE_SHARE = {"small": 0.14, "medium": 0.2, "large": 0.28, "dominant": 0.38}
+#: A left or right column's share of the measure.
+_COLUMN = 0.46
+
+
+def _label_size(text: str, family: str, size: float, measure: float, tracking: float, weight: str) -> float:
+    """``size``, or smaller where a single line would overrun ``measure``."""
+    width = face(family, weight).measure(text, tracking)
+    return min(size, measure / width) if width else size
 
 
 def _front_picture(ctx: Ctx) -> str:
     """The picture is the whole cover; the type is set straight onto it.
 
-    No panel, band or plate: the image prompt keeps a third of the picture calm for
-    the type (``type_zone``), and each line takes a colour that reads on the pixels
-    actually under it -- the palette's own ink where it does, light or dark type
-    where it does not. The imprint sits small at the foot, as on the house covers.
+    No panel, band or plate: the brief's ``lettering`` says where the type goes --
+    across the top or bottom, in a column down one side, or on a rising diagonal --
+    how large, and in what colour, solid or a gradient. The image prompt kept that
+    area calm; the colours are checked against the pixels actually under the type
+    and give way to light or dark type where they would not read. The imprint sits
+    small at the foot, as on the house covers.
     """
-    g, d, c, p = ctx.geo, ctx.direction, ctx.content, ctx.palette
+    g, d, c = ctx.geo, ctx.direction, ctx.content
+    lt = d.lettering
     b, pw, ph, m = g.bleed_mm, g.panel_w_mm, g.panel_h_mm, ctx.margin
-    cw = g.front_bleed_w_mm
     fam = d.type_family
     out = [_artwork_or_motif(ctx, artwork_plan(d, g))]
 
-    centre, measure = b + pw / 2, pw - 2 * m
     author_size, genre_size, imprint_size = pw * 0.046, pw * 0.032, pw * 0.024
-    title = fit_display(
-        cased(c.title, d.title_case),
-        fam,
-        max_width=measure,
-        max_height=ph * 0.24,
-        max_lines=3,
-        leading=0.98,
-        tracking=-0.01,
-    )
-    fd = face(fam, "display")
-    title_h = title.height + fd.cap_height * title.size
-    stack_h = author_size * 1.9 + title_h + genre_size * 2.2
-
     imprint_top = b + ph - m * 0.9 - imprint_size
-    top = b + m * 1.1 if d.type_zone == "top" else imprint_top - m * 1.4 - stack_h
-    ink = _ink_on(_ground_under(ctx, (0, top - m * 0.4, cw, stack_h + m * 0.8)), p.ink)
-    accent = p.accent if abs(luminance(p.accent) - luminance(ink)) < 0.4 else ink
+    share = _TITLE_SHARE[lt.size]
+    title_text = cased(c.title, d.title_case)
+    cap = face(fam, "display").cap_height
 
-    frag, author_base = draw_label(
-        c.author, fam, author_size, x=centre, cap_top=top, align="center",
-        fill=ink, tracking=0.08, weight="bold",
-    )
-    out.append(frag)
-    frag, title_base = draw_block(
-        title, fam, x=centre, cap_top=author_base + author_size * 0.9, align="center", fill=ink,
-    )
-    out.append(frag)
-    frag, _ = draw_label(
-        c.genre_line, fam, genre_size, x=centre, cap_top=title_base + genre_size * 1.2,
-        align="center", fill=accent, tracking=0.06, weight="italic",
-    )
-    out.append(frag)
+    if lt.location == "diagonal":
+        out.append(_diagonal(ctx, title_text, share, author_size, genre_size, imprint_top))
+    else:
+        column = lt.location in ("left", "right")
+        measure = (pw - 2 * m) * (_COLUMN if column else 1)
+        align = {"left": "left", "right": "right"}.get(lt.location, lt.align)
+        title = fit_display(
+            title_text, fam, max_width=measure,
+            max_height=ph * share * (1.4 if column else 1), max_lines=5 if column else 3,
+            leading=0.98, tracking=-0.01,
+        )
+        author_size = _label_size(c.author, fam, author_size, measure, 0.08, "bold")
+        genre_size = _label_size(c.genre_line, fam, genre_size, measure, 0.06, "italic")
+        stack_h = author_size * 1.9 + title.height + cap * title.size + genre_size * 2.2
+        top = imprint_top - m * 1.4 - stack_h if lt.location == "bottom" else b + m * 1.1
+        x = {"left": b + m, "center": b + pw / 2, "right": b + pw - m}[align]
+        left = x - {"left": 0, "center": measure / 2, "right": measure}[align]
+        area = (left - m * 0.4, top - m * 0.4, measure + m * 0.8, stack_h + m * 0.8)
+        ground = _ground_under(ctx, area)
+        text_defs, text_fill = _paint(lt.text_ink, ground, area, "text-ink")
+
+        frag, author_base = draw_label(
+            c.author, fam, author_size, x=x, cap_top=top, align=align,
+            fill=text_fill, tracking=0.08, weight="bold",
+        )
+        title_top = author_base + author_size * 0.9
+        title_box = (left, title_top, measure, title.height + cap * title.size)
+        title_defs, title_fill = _paint(lt.title_ink, ground, title_box, "title-ink")
+        out += [text_defs, title_defs, frag]
+        frag, title_base = draw_block(title, fam, x=x, cap_top=title_top, align=align, fill=title_fill)
+        out.append(frag)
+        frag, _ = draw_label(
+            c.genre_line, fam, genre_size, x=x, cap_top=title_base + genre_size * 1.2,
+            align=align, fill=text_fill, tracking=0.06, weight="italic",
+        )
+        out.append(frag)
 
     imprint_ink = _ink_on(
-        _ground_under(ctx, (0, imprint_top - m * 0.3, cw, imprint_size + m * 0.6)), p.ink
+        _ground_under(ctx, (0, imprint_top - m * 0.3, g.front_bleed_w_mm, imprint_size + m * 0.6)),
+        lt.text_ink.color,
     )
     frag, _ = draw_label(
-        c.imprint.upper(), fam, imprint_size, x=centre, cap_top=imprint_top,
+        c.imprint.upper(), fam, imprint_size, x=b + pw / 2, cap_top=imprint_top,
         align="center", fill=imprint_ink, tracking=0.2, weight="bold",
     )
     out.append(frag)
+    return "".join(out)
+
+
+def _diagonal(
+    ctx: Ctx, title_text: str, share: float, author_size: float, genre_size: float, imprint_top: float
+) -> str:
+    """The title on a rising baseline through the middle; author above and genre
+    below it, horizontal and centred."""
+    g, d, c, lt = ctx.geo, ctx.direction, ctx.content, ctx.direction.lettering
+    b, pw, m = g.bleed_mm, g.panel_w_mm, ctx.margin
+    fam, centre, measure = d.type_family, b + pw / 2, pw - 2 * m
+    cap = face(fam, "display").cap_height
+
+    author_size = _label_size(c.author, fam, author_size, measure, 0.08, "bold")
+    genre_size = _label_size(c.genre_line, fam, genre_size, measure, 0.06, "italic")
+    author_top = b + m * 1.1
+    genre_top = imprint_top - m * 0.8 - genre_size
+    # The band the rotated title may fill, between the author and the genre line.
+    band_top, band_bottom = author_top + author_size * 2.2, genre_top - genre_size * 1.2
+    theta = math.radians(-lt.angle)
+    cos, sin = math.cos(theta), math.sin(theta)
+
+    max_w, max_h = measure / cos, g.panel_h_mm * share
+    for _ in range(4):
+        title = fit_display(title_text, fam, max_width=max_w, max_height=max_h, max_lines=3,
+                            leading=0.98, tracking=-0.01)
+        w, h = max(title.widths, default=0), title.height + cap * title.size
+        # The rotated block's bounding box has to fit the measure and the band.
+        k = min(measure / (w * cos + h * sin or 1), (band_bottom - band_top) / (w * sin + h * cos or 1))
+        if k >= 1:
+            break
+        max_w, max_h = max_w * k, max_h * k
+    cy = (band_top + band_bottom) / 2
+    bw, bh = w * cos + h * sin, w * sin + h * cos
+    ground = _ground_under(ctx, (centre - bw / 2, cy - bh / 2, bw, bh))
+    title_defs, title_fill = _paint(lt.title_ink, ground, (centre - w / 2, cy - h / 2, w, h), "title-ink")
+    block, _ = draw_block(title, fam, x=centre, cap_top=cy - h / 2, align="center", fill=title_fill)
+    out = [title_defs, f'<g transform="rotate({lt.angle} {_n(centre)} {_n(cy)})">{block}</g>']
+
+    for text, size, top, tracking, weight in (
+        (c.author, author_size, author_top, 0.08, "bold"),
+        (c.genre_line, genre_size, genre_top, 0.06, "italic"),
+    ):
+        area = (b, top - m * 0.3, pw, size + m * 0.6)
+        fill = _ink_on(_ground_under(ctx, area), lt.text_ink.color)
+        frag, _ = draw_label(text, fam, size, x=centre, cap_top=top, align="center",
+                             fill=fill, tracking=tracking, weight=weight)
+        out.append(frag)
     return "".join(out)
 
 

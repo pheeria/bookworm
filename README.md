@@ -172,14 +172,28 @@ alone:
 
 The image model paints only the picture. The image prompt follows the house master
 format -- story, motif, twist, composition, colour, style, respect, avoid -- without
-the typography, and tells the model which third to keep calm for the type.
+the typography, and tells the model which area to keep calm for the type.
 
 Book covers use one layout, `picture`: the picture is the whole cover and the type
-is set straight onto it -- no panel, band or plate behind it. Each concept picks a
-`type_zone`, `top` or `bottom`; author, title and genre sit there, the publisher
-line small at the foot. Each line's colour is chosen against the pixels actually
-under it: the palette's ink where it reads, cream or near-black type where it
-does not. The
+is set straight onto it -- no panel, band or plate behind it. Each concept plans
+its `lettering`:
+
+- `location`: `top` or `bottom` (stacked across that third), `left` or `right` (a
+  narrow column down that side, flush to its edge), or `diagonal` (the title on a
+  rising baseline, `angle` -12° to -35°, with author and genre horizontal above
+  and below it). The publisher line always sits small at the foot.
+- `size`: `small`, `medium`, `large` or `dominant` -- how much of the cover the
+  title takes.
+- `align`: for top and bottom.
+- `title_ink`, `text_ink`: a hex colour, or two stops and a direction
+  (`gradient_to`, `gradient`: `down`, `across`, `diagonal`) for a linear gradient.
+
+The face (`type_family`) and casing come from the reader type's families. After
+the picture is painted, Claude looks at it with the plan and confirms or moves the
+lettering -- position, size, face, colours -- to where the picture actually left
+room; `art_direction_meta.lettering` says whether the `plan` or the `vision` pass
+set it. Every colour is still checked against the pixels under the type and gives
+way to cream or near-black type where it would not read. The
 Typo-Daten are then set exactly as vector type. A title the Buchkern rates
 "ungeeignet" for the requested type still gets a cover, with a note saying so.
 Without Claude credentials every step falls back to the plain brief.

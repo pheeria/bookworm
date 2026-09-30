@@ -21,6 +21,9 @@ class Palette:
     tone: tuple[str, ...] = ()
 
 
+HEX = r"^#[0-9A-Fa-f]{6}$"
+
+
 def rgb(hex_colour: str) -> tuple[int, int, int]:
     r, g, b = bytes.fromhex(hex_colour.lstrip("#"))
     return r, g, b
