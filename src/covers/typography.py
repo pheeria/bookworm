@@ -42,60 +42,107 @@ def _find(basename: str) -> str | None:
 @dataclass(frozen=True)
 class FontSpec:
     file: str
-    index: int
+    index: int = 0
+    #: Variable-font instance, e.g. ``(("wght", 800),)``. Selected at load time,
+    #: so the bundled files ship unmodified, as their OFL requires.
+    axes: tuple[tuple[str, float], ...] = ()
 
 
-# Logical families mapped onto the faces that ship with macOS. Futura, Palatino
-# and Optima are the German-publishing workhorses; Didot and Bodoni cover the
-# neoclassical register that Insel and Manesse live in.
-FAMILIES: dict[str, dict[str, FontSpec]] = {
-    "geometric": {  # Futura -- rororo, KiWi, Fischer
-        "display": FontSpec("Futura.ttc", 4),  # Condensed ExtraBold
-        "bold": FontSpec("Futura.ttc", 2),
-        "regular": FontSpec("Futura.ttc", 0),
-        "italic": FontSpec("Futura.ttc", 1),
+def _v(file: str, **axes: float) -> FontSpec:
+    """A bundled variable face at the given axis values."""
+    return FontSpec(file, 0, tuple(axes.items()))
+
+
+# Bundled faces, all SIL Open Font License (see fonts/OFL-*.txt). The Mac faces
+# below are licensed for the machine they ship on, not for a server, so each
+# family falls back to an open face of the same register when they are absent.
+_JOST, _JOST_I = "Jost[wght].ttf", "Jost-Italic[wght].ttf"
+_ARCHIVO, _ARCHIVO_I = "Archivo[wdth,wght].ttf", "Archivo-Italic[wdth,wght].ttf"
+_NUNITO, _NUNITO_I = (
+    "NunitoSans[YTLC,opsz,wdth,wght].ttf",
+    "NunitoSans-Italic[YTLC,opsz,wdth,wght].ttf",
+)
+_PLAYFAIR, _PLAYFAIR_I = "PlayfairDisplay[wght].ttf", "PlayfairDisplay-Italic[wght].ttf"
+_BODONI, _BODONI_I = "BodoniModa[opsz,wght].ttf", "BodoniModa-Italic[opsz,wght].ttf"
+_BASKERVILLE, _BASKERVILLE_I = "LibreBaskerville[wght].ttf", "LibreBaskerville-Italic[wght].ttf"
+_GARAMOND, _GARAMOND_I = "EBGaramond[wght].ttf", "EBGaramond-Italic[wght].ttf"
+
+
+# Logical families, each weight an ordered list of faces to try. The macOS faces
+# come first where they exist: Futura, Palatino and Optima are the German-
+# publishing workhorses; Didot and Bodoni cover the neoclassical register that
+# Insel and Manesse live in. The last three families are open faces in their own
+# right, chosen because German publishing actually sets in them.
+FAMILIES: dict[str, dict[str, tuple[FontSpec, ...]]] = {
+    "geometric": {  # Futura -- rororo, KiWi, Fischer; open: Jost
+        "display": (FontSpec("Futura.ttc", 4), _v(_JOST, wght=800)),  # Condensed ExtraBold
+        "bold": (FontSpec("Futura.ttc", 2), _v(_JOST, wght=700)),
+        "regular": (FontSpec("Futura.ttc", 0), _v(_JOST, wght=400)),
+        "italic": (FontSpec("Futura.ttc", 1), _v(_JOST_I, wght=400)),
     },
-    "grotesk": {  # Helvetica Neue
-        "display": FontSpec("HelveticaNeue.ttc", 9),  # Condensed Black
-        "bold": FontSpec("HelveticaNeue.ttc", 1),
-        "regular": FontSpec("HelveticaNeue.ttc", 10),
-        "italic": FontSpec("HelveticaNeue.ttc", 2),
+    "grotesk": {  # Helvetica Neue; open: Archivo
+        "display": (FontSpec("HelveticaNeue.ttc", 9), _v(_ARCHIVO, wght=900, wdth=62)),
+        "bold": (FontSpec("HelveticaNeue.ttc", 1), _v(_ARCHIVO, wght=700, wdth=100)),
+        "regular": (FontSpec("HelveticaNeue.ttc", 10), _v(_ARCHIVO, wght=400, wdth=100)),
+        "italic": (FontSpec("HelveticaNeue.ttc", 2), _v(_ARCHIVO_I, wght=400, wdth=100)),
     },
-    "grotesk_condensed": {  # Avenir Next Condensed
-        "display": FontSpec("Avenir Next Condensed.ttc", 8),  # Heavy
-        "bold": FontSpec("Avenir Next Condensed.ttc", 0),
-        "regular": FontSpec("Avenir Next Condensed.ttc", 5),
-        "italic": FontSpec("Avenir Next Condensed.ttc", 4),
+    "grotesk_condensed": {  # Avenir Next Condensed; open: Nunito Sans at 75% width
+        "display": (FontSpec("Avenir Next Condensed.ttc", 8), _v(_NUNITO, wght=900, wdth=75)),
+        "bold": (FontSpec("Avenir Next Condensed.ttc", 0), _v(_NUNITO, wght=700, wdth=75)),
+        "regular": (FontSpec("Avenir Next Condensed.ttc", 5), _v(_NUNITO, wght=400, wdth=75)),
+        "italic": (FontSpec("Avenir Next Condensed.ttc", 4), _v(_NUNITO_I, wght=400, wdth=75)),
     },
-    "neoclassical": {  # Didot
-        "display": FontSpec("Didot.ttc", 2),
-        "bold": FontSpec("Didot.ttc", 2),
-        "regular": FontSpec("Didot.ttc", 0),
-        "italic": FontSpec("Didot.ttc", 1),
+    "neoclassical": {  # Didot; open: Playfair Display
+        "display": (FontSpec("Didot.ttc", 2), _v(_PLAYFAIR, wght=700)),
+        "bold": (FontSpec("Didot.ttc", 2), _v(_PLAYFAIR, wght=700)),
+        "regular": (FontSpec("Didot.ttc", 0), _v(_PLAYFAIR, wght=400)),
+        "italic": (FontSpec("Didot.ttc", 1), _v(_PLAYFAIR_I, wght=400)),
     },
-    "didone": {  # Bodoni 72
-        "display": FontSpec("Bodoni 72.ttc", 2),
-        "bold": FontSpec("Bodoni 72.ttc", 2),
-        "regular": FontSpec("Bodoni 72.ttc", 0),
-        "italic": FontSpec("Bodoni 72.ttc", 1),
+    # opsz 36, not the 96 maximum: at 96 the hairlines vanish in a cover shown
+    # at thumbnail size, which is where most covers are seen.
+    "didone": {  # Bodoni 72; open: Bodoni Moda
+        "display": (FontSpec("Bodoni 72.ttc", 2), _v(_BODONI, wght=700, opsz=36)),
+        "bold": (FontSpec("Bodoni 72.ttc", 2), _v(_BODONI, wght=700, opsz=36)),
+        "regular": (FontSpec("Bodoni 72.ttc", 0), _v(_BODONI, wght=400, opsz=11)),
+        "italic": (FontSpec("Bodoni 72.ttc", 1), _v(_BODONI_I, wght=400, opsz=11)),
     },
-    "literary_serif": {  # Baskerville
-        "display": FontSpec("Baskerville.ttc", 1),
-        "bold": FontSpec("Baskerville.ttc", 1),
-        "regular": FontSpec("Baskerville.ttc", 0),
-        "italic": FontSpec("Baskerville.ttc", 2),
+    "literary_serif": {  # Baskerville -- Suhrkamp; open: Libre Baskerville
+        "display": (FontSpec("Baskerville.ttc", 1), _v(_BASKERVILLE, wght=700)),
+        "bold": (FontSpec("Baskerville.ttc", 1), _v(_BASKERVILLE, wght=700)),
+        "regular": (FontSpec("Baskerville.ttc", 0), _v(_BASKERVILLE, wght=400)),
+        "italic": (FontSpec("Baskerville.ttc", 2), _v(_BASKERVILLE_I, wght=400)),
     },
-    "humanist": {  # Optima -- Hermann Zapf
-        "display": FontSpec("Optima.ttc", 4),  # ExtraBlack
-        "bold": FontSpec("Optima.ttc", 1),
-        "regular": FontSpec("Optima.ttc", 0),
-        "italic": FontSpec("Optima.ttc", 2),
+    "humanist": {  # Optima -- Hermann Zapf; open: Alegreya Sans
+        "display": (FontSpec("Optima.ttc", 4), FontSpec("AlegreyaSans-Black.ttf")),  # ExtraBlack
+        "bold": (FontSpec("Optima.ttc", 1), FontSpec("AlegreyaSans-Bold.ttf")),
+        "regular": (FontSpec("Optima.ttc", 0), FontSpec("AlegreyaSans-Regular.ttf")),
+        "italic": (FontSpec("Optima.ttc", 2), FontSpec("AlegreyaSans-Italic.ttf")),
     },
-    "slab": {  # Superclarendon
-        "display": FontSpec("SuperClarendon.ttc", 7),  # Black
-        "bold": FontSpec("SuperClarendon.ttc", 5),
-        "regular": FontSpec("SuperClarendon.ttc", 0),
-        "italic": FontSpec("SuperClarendon.ttc", 1),
+    "slab": {  # Superclarendon; open: Zilla Slab
+        "display": (FontSpec("SuperClarendon.ttc", 7), FontSpec("ZillaSlab-Bold.ttf")),  # Black
+        "bold": (FontSpec("SuperClarendon.ttc", 5), FontSpec("ZillaSlab-Bold.ttf")),
+        "regular": (FontSpec("SuperClarendon.ttc", 0), FontSpec("ZillaSlab-Regular.ttf")),
+        "italic": (FontSpec("SuperClarendon.ttc", 1), FontSpec("ZillaSlab-Italic.ttf")),
+    },
+    "garalde": {  # EB Garamond -- the Garamond/Sabon of Suhrkamp, Insel and Hanser
+        "display": (_v(_GARAMOND, wght=600),),
+        "bold": (_v(_GARAMOND, wght=700),),
+        "regular": (_v(_GARAMOND, wght=400),),
+        "italic": (_v(_GARAMOND_I, wght=400),),
+    },
+    # Only the title is blackletter; author and imprint lines, set in tracked
+    # capitals, would be unreadable in it, so they fall to Garamond.
+    "fraktur": {  # UnifrakturMaguntia titles over Garamond, for Märchen and the historical
+        "display": (FontSpec("UnifrakturMaguntia-Book.ttf"),),
+        "bold": (_v(_GARAMOND, wght=600),),
+        "regular": (_v(_GARAMOND, wght=400),),
+        "italic": (_v(_GARAMOND_I, wght=400),),
+    },
+    "meta": {  # Fira Sans -- Erik Spiekermann's open successor to FF Meta
+        "display": (FontSpec("FiraSans-Black.ttf"),),
+        "bold": (FontSpec("FiraSans-Bold.ttf"),),
+        "regular": (FontSpec("FiraSans-Regular.ttf"),),
+        "italic": (FontSpec("FiraSans-Italic.ttf"),),
     },
 }
 
@@ -106,9 +153,12 @@ FAMILY_FALLBACK = (
     "grotesk_condensed",
     "humanist",
     "literary_serif",
+    "garalde",
     "neoclassical",
     "didone",
     "slab",
+    "meta",
+    "fraktur",
 )
 
 TYPE_FAMILIES = tuple(FAMILIES)
@@ -119,13 +169,17 @@ class MissingFontError(RuntimeError):
 
 
 class Face:
-    def __init__(self, path: str, index: int) -> None:
+    def __init__(self, path: str, index: int, axes: tuple[tuple[str, float], ...] = ()) -> None:
         blob = hb.Blob.from_file_path(path)
         self._hb_face = hb.Face(blob, index)
         self._hb_font = hb.Font(self._hb_face)
         self.upem: int = self._hb_face.upem
         self._tt = TTFont(path, fontNumber=index, lazy=True)
-        self._glyphset = self._tt.getGlyphSet()
+        # Shaping (advances) and outlines must agree on the instance.
+        location = dict(axes) or None
+        if location:
+            self._hb_font.set_variations(location)
+        self._glyphset = self._tt.getGlyphSet(location=location)
         self._order = self._tt.getGlyphOrder()
         os2 = self._tt["OS/2"] if "OS/2" in self._tt else None
         cap = getattr(os2, "sCapHeight", 0) or 0
@@ -191,8 +245,8 @@ class Face:
 
 
 @lru_cache(maxsize=64)
-def _face(path: str, index: int) -> Face:
-    return Face(path, index)
+def _face(path: str, index: int, axes: tuple[tuple[str, float], ...]) -> Face:
+    return Face(path, index, axes)
 
 
 @lru_cache(maxsize=256)
@@ -203,17 +257,16 @@ def face(family: str, weight: str = "display") -> Face:
         spec
         for fam in families
         for w in (weight, "bold", "regular", "display")
-        if (spec := FAMILIES.get(fam, {}).get(w))
+        for spec in FAMILIES.get(fam, {}).get(w, ())
     )
     for spec in candidates:
         if path := _find(spec.file):
             try:
-                return _face(path, spec.index)
+                return _face(path, spec.index, spec.axes)
             except Exception:
                 continue
     raise MissingFontError(
-        "no usable typeface found; install the macOS supplemental fonts or drop "
-        "TTF/OTF files into src/covers/fonts/"
+        "no usable typeface found; the bundled faces in src/covers/fonts/ are missing"
     )
 
 

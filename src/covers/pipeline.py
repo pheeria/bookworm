@@ -24,6 +24,7 @@ from .formats import geometry, px, resolve_format
 from .layout import Content, Ctx, artwork_plan
 from .palettes import darkest_and_lightest
 from .render import render
+from .typography import face
 
 log = logging.getLogger("covers.pipeline")
 
@@ -84,6 +85,10 @@ async def create_cover(
     notes: list[str] = []
     artwork_uri = None
     art_meta: dict | None = None
+
+    # Resolve the typeface before paying for artwork: a missing face should fail
+    # the request for free, not after the image model has been billed.
+    face(direction.type_family, "display")
 
     plan = artwork_plan(direction, geo)
     if direction.artwork == "generated" and plan is None:

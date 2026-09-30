@@ -19,7 +19,7 @@ from covers.artdirection import (
 from covers.formats import FORMATS, geometry, resolve_format
 from covers.layout import Content, Ctx, artwork_plan, build_front
 from covers.main import app
-from covers.typography import face, fit_display, umlaut_leading
+from covers.typography import TYPE_FAMILIES, face, fit_display, umlaut_leading
 
 client = TestClient(app)
 
@@ -78,6 +78,47 @@ def test_umlaut_opens_the_leading():
     assert umlaut_leading(["SCHULD", "SÜHNE"], base) > base
     # A capital umlaut on the first line collides with nothing above it.
     assert umlaut_leading(["SÜHNE", "UND"], base) == base
+
+
+@pytest.fixture
+def bundled_fonts_only(monkeypatch):
+    """The typeface search path of a server: no macOS faces, only src/covers/fonts."""
+    import os
+
+    from covers import typography
+
+    monkeypatch.setattr(
+        typography, "_FONT_DIRS", (os.path.join(os.path.dirname(typography.__file__), "fonts"),)
+    )
+    typography.face.cache_clear()
+    yield
+    typography.face.cache_clear()
+
+
+@pytest.mark.parametrize("family", TYPE_FAMILIES)
+@pytest.mark.parametrize("weight", ["display", "bold", "regular", "italic"])
+def test_every_family_has_its_own_open_face(bundled_fonts_only, family, weight):
+    """A deploy has no Futura or Didot; each family must still resolve to its own
+    bundled face rather than silently borrowing another family's."""
+    from covers.typography import FAMILIES, _find
+
+    assert any(_find(spec.file) for spec in FAMILIES[family][weight])
+    f = face(family, weight)
+    for text in ("Die Übersetzerin", "STRASSE ÄÖÜ", "»Märchen« – 1999"):
+        assert f.measure(text) > 0 and f.run(text, 10.0).startswith("<path")
+
+
+def test_variable_faces_use_the_requested_instance(bundled_fonts_only):
+    """Shaping and outlines both follow the axes: black condensed is narrower."""
+    black_condensed = face("grotesk", "display")
+    regular = face("grotesk", "regular")
+    assert black_condensed.measure("HAMBURG") < regular.measure("HAMBURG") * 0.85
+
+
+def test_blackletter_titles_are_never_set_in_capitals():
+    d = fallback_direction("Ein Märchen.", "Frau Holle", "Brüder Grimm")
+    pinned = apply_overrides(d.model_copy(update={"title_case": "upper"}), type_family="fraktur")
+    assert pinned.title_case == "title"
 
 
 def test_glyphs_are_outlined_and_scaled_to_the_em():

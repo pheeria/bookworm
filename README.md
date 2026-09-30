@@ -196,11 +196,30 @@ dependency.
 - Display sizes get slightly negative tracking; small labels get positive.
 - `ß` uppercases to `SS`, per German typographic practice.
 
-Faces are the macOS system fonts, grouped into logical families
-(`geometric` is Futura, `neoclassical` is Didot, `grotesk` is Helvetica Neue, and
-so on) with a fallback chain. Drop TTF/OTF files into `src/covers/fonts/` to
-override. **Check the licence before printing commercially** — the bundled macOS
-faces are licensed for use on the machine, not for redistribution.
+Type is set in logical families. On a Mac each uses the system face first; those
+are licensed for the machine, not for a server, so every family also has an open
+face (SIL Open Font License) bundled in `src/covers/fonts/`, which is what a
+deploy uses. Variable fonts ship unmodified; the weight and width are chosen at
+load time.
+
+| Family | macOS | Bundled open face |
+|---|---|---|
+| `geometric` | Futura | Jost |
+| `grotesk` | Helvetica Neue (Condensed Black titles) | Archivo, condensed black titles |
+| `grotesk_condensed` | Avenir Next Condensed | Nunito Sans at 75% width |
+| `neoclassical` | Didot | Playfair Display |
+| `didone` | Bodoni 72 | Bodoni Moda |
+| `literary_serif` | Baskerville | Libre Baskerville |
+| `humanist` | Optima | Alegreya Sans |
+| `slab` | Superclarendon | Zilla Slab |
+| `garalde` | — | EB Garamond: the Garamond/Sabon register of Suhrkamp, Insel, Hanser |
+| `fraktur` | — | UnifrakturMaguntia titles over Garamond, for Märchen and the historical; never in capitals |
+| `meta` | — | Fira Sans, Spiekermann's open successor to FF Meta |
+
+So a cover made on a Mac and the same cover from the deployed service differ in
+face, though not in layout. The licences are next to the fonts (`OFL-*.txt`). The
+pipeline resolves the face before calling the image model, so a font problem never
+costs an image.
 
 ## Layouts
 

@@ -14,7 +14,7 @@ import logging
 import re
 from typing import Literal, get_args
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from . import settings
 from .palettes import PALETTES_BY_KEY, Palette, choose_palette
@@ -41,6 +41,9 @@ TypeFamily = Literal[
     "literary_serif",
     "humanist",
     "slab",
+    "garalde",
+    "fraktur",
+    "meta",
 ]
 
 Motif = Literal["arcs", "blocks", "dots", "split", "waveform", "rings", "none"]
@@ -105,7 +108,11 @@ class ArtDirection(BaseModel):
         description=(
             "geometric is Futura (the rororo/KiWi workhorse), grotesk is Helvetica Neue, "
             "grotesk_condensed is a tall condensed sans, neoclassical is Didot, didone is "
-            "Bodoni, literary_serif is Baskerville, humanist is Optima, slab is a Clarendon."
+            "Bodoni, literary_serif is Baskerville, humanist is Optima, slab is a Clarendon. "
+            "garalde is Garamond, the classic literary-fiction face of Suhrkamp, Insel "
+            "and Hanser. fraktur is blackletter for the title, for fairy tales, legends "
+            "and historical subjects; never set it in capitals. meta is Spiekermann's "
+            "humanist sans, contemporary and non-fiction in feel."
         )
     )
     artwork: Artwork = Field(
@@ -144,6 +151,14 @@ class ArtDirection(BaseModel):
         )
     )
     rationale: str = Field(description="One or two sentences on why this cover fits the book.")
+
+    @model_validator(mode="after")
+    def _no_blackletter_capitals(self) -> "ArtDirection":
+        # Blackletter capitals are not meant to stand in a row; a title in them is
+        # unreadable. Holds whoever chose the casing, model or caller.
+        if self.type_family == "fraktur" and self.title_case == "upper":
+            self.title_case = "title"
+        return self
 
     @property
     def palette(self) -> Palette:
