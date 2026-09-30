@@ -146,8 +146,36 @@ for covers made outside a book, alongside its full set of overrides.
 | `POST` | `/books/{slug}/covers/{id}/publish` | Add `{id, type, url, color, theme}` to the book's `generated_covers` |
 | `POST` | `/books/{slug}/covers/{id}/unpublish` | Remove it again |
 | `DELETE` | `/books/{slug}/covers/{id}` | The cover, its image and its entry. 204 |
+| `GET` | `/books/{slug}/core` | The book's Buchkern, its research notes and sources. See below |
+| `POST` | `/books/{slug}/core` | Research the book again and rebuild its Buchkern |
 | `POST` | `/covers/upload` | Add a finished cover to its book, published: multipart `file`, `title`, `type`. See below. 201 |
 | `GET` | `/cover-images/{image_id}.png` | The image, cached as immutable: each render gets a new id and URL. Not under the book, so a published `url` survives a slug change |
+
+**The Buchkern and concepts.** With Claude as director (`COVERS_DIRECTOR=claude`,
+the default), a generated cover is built in three steps rather than from the blurb
+alone:
+
+1. **Research** (once per book): Claude searches Wikipedia and Goodreads
+   (`web_search`, restricted to those two domains, at most 5 searches) and writes
+   notes on the story, setting, tone, translation and series.
+2. **Buchkern** (once per book, Prompt A): from the book's data and the notes, the
+   twelve fields every cover of the title rests on -- place and time, the story in a
+   sentence, emotional core, 3-5 showable motifs, twists, tone, guardrails, taboos,
+   recognition, genre hint, rights, the exact Typo-Daten -- plus an Einordnung of
+   how well each reader type fits. Cached in `book_cores` and rebuilt when the
+   book's details change.
+3. **Concepts** (per cover, Prompt B): three concepts for the reader type -- a main
+   one and two alternatives -- each with its own motif, twist, composition, palette,
+   layout and type family, from the type's profile in `covers/profiles.py`. The main
+   concept is rendered; the other two are stored on the cover, and
+   `regenerate` with `{"concept": 1}` or `2` renders one without writing new ones.
+
+The image model paints only the picture. The image prompt follows the house master
+format -- story, motif, twist, composition, colour, style, respect, avoid -- without
+the typography, and tells the model where the layout will set the type. The
+Typo-Daten are then set exactly as vector type. A title the Buchkern rates
+"ungeeignet" for the requested type still gets a cover, with a note saying so.
+Without Claude credentials every step falls back to the plain brief.
 
 **Uploading a finished cover.** `POST /covers/upload` takes a multipart form with
 the image `file`, the book's `title` and the reader `type`. The title is matched

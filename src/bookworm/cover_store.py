@@ -20,10 +20,24 @@ _INDEXES = [
 ]
 
 
-def init(db: Database) -> tuple[Collection, gridfs.GridFS]:
+def init(db: Database) -> tuple[Collection, Collection, gridfs.GridFS]:
+    """The covers, the Buchkern cache, and the images."""
     covers = db["covers"]
     covers.create_indexes(_INDEXES)
-    return covers, gridfs.GridFS(db, "cover_images")
+    cores = db["book_cores"]
+    cores.create_indexes([IndexModel("book_id", unique=True)])
+    return covers, cores, gridfs.GridFS(db, "cover_images")
+
+
+def get_core(cores: Collection, book_id: ObjectId) -> dict | None:
+    return cores.find_one({"book_id": book_id}, {"_id": 0})
+
+
+def put_core(cores: Collection, book_id: ObjectId, doc: dict) -> dict:
+    """Store the Buchkern for a book, replacing any earlier one."""
+    doc = {**doc, "book_id": book_id, "updated_at": datetime.now(UTC)}
+    cores.replace_one({"book_id": book_id}, doc, upsert=True)
+    return doc
 
 
 def insert(covers: Collection, doc: dict) -> dict:

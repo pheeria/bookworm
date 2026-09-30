@@ -14,6 +14,7 @@ from . import imagegen, settings
 from .artdirection import (
     DEFAULT_STYLE,
     DRAWN_MOTIFS,
+    ArtDirection,
     apply_overrides,
     direct,
     fallback_direction,
@@ -50,7 +51,10 @@ async def create_cover(
     image_quality: str | None = None,
     seed: int | None = None,
     marks: bool = False,
+    brief: ArtDirection | None = None,
+    brief_meta: dict | None = None,
 ) -> dict:
+    """Render a front cover. ``brief`` skips the art director: the caller wrote it."""
     fmt = resolve_format(format)
     geo = geometry(fmt, dpi=dpi)
 
@@ -58,7 +62,9 @@ async def create_cover(
     style = style or (profile.style if profile else DEFAULT_STYLE)
     director = director or settings.director()
 
-    if director == "openai":
+    if brief is not None:
+        direction, ad_meta = brief, {"style": style, **(brief_meta or {"source": "brief"})}
+    elif director == "openai":
         direction, ad_meta = await direct_openai(text, title, author, style=style, mood=profile)
     elif director == "none":
         # No text model at all: the deterministic brief decides everything except

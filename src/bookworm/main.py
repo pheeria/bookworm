@@ -39,7 +39,9 @@ def create_app(client_factory: Callable[[], MongoClient] = books_db.connect) -> 
         await asyncio.to_thread(check_fonts)
         client = client_factory()
         app.state.books = books_db.init(client)
-        app.state.covers, app.state.cover_images = cover_store.init(app.state.books.database)
+        app.state.covers, app.state.cores, app.state.cover_images = cover_store.init(
+            app.state.books.database
+        )
         yield
         client.close()
 

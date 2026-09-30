@@ -8,6 +8,8 @@
     POST   /books/{slug}/covers/{id}/publish      put the short entry on the book
     POST   /books/{slug}/covers/{id}/unpublish
     DELETE /books/{slug}/covers/{id}
+    GET    /books/{slug}/core                  the Buchkern the covers are built on
+    POST   /books/{slug}/core                  research the book again and rebuild it
     POST   /covers/upload                     add a finished cover to its book, published
     GET    /cover-images/{image_id}.png       immutable; a new render gets a new URL
 
@@ -17,12 +19,20 @@ formalities (``bookworm.houses``); the book supplies the words. A caller only
 chooses the type, and may rewrite the brief text. An uploaded cover is the
 caller's own image; only its colour and theme are derived.
 
+With Claude as director, a generated cover rests on the book's Buchkern
+(``covers.core``: researched on Wikipedia and Goodreads, cached per book) and on
+three concepts for its reader type (``covers.concepts``); one is rendered, the
+other two are kept to render on request. Without Claude it falls back to the
+plain brief.
+
 The book is read, never written, except for the short entry of a published cover
 in its ``generated_covers``, which is kept in step with the cover document.
 """
 
 import asyncio
+import hashlib
 import io
+import json
 import uuid
 from datetime import UTC, datetime
 from typing import Annotated, Any, Literal, get_args
@@ -48,10 +58,13 @@ from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 from books import db as books_db
 from books.models import Book, BookTheme, Color, GeneratedCover, ReaderType
 from books.router import not_found
+from covers import concepts as covers_concepts
+from covers import core as covers_core
 from covers.models import CoverRequest, CoverResult
 from covers.moods import MOODS
 from covers.palettes import luminance, rgb
 from covers.pipeline import create_cover
+from covers.profiles import PROFILES
 
 from . import cover_store
 from .houses import formalities
@@ -77,6 +90,10 @@ class BookCoverRequest(BaseModel):
 
 class RegenerateRequest(BookCoverRequest):
     type: ReaderType | None = Field(default=None, description="Defaults to the cover's own.")
+    concept: int | None = Field(
+        default=None, ge=0, le=2,
+        description="Render one of the cover's stored concepts (0 is the main one) instead of new ones.",
+    )
 
 
 class CoverPatch(BaseModel):
@@ -108,6 +125,10 @@ class GeneratedBookCover(_BookCoverBase, CoverResult):
     request: dict[str, Any] = Field(
         description="The effective request: book, publisher, reader type and options."
     )
+    concepts: dict[str, Any] | None = Field(
+        default=None, description="The three concepts for this reader type, when Claude wrote them."
+    )
+    concept: int | None = Field(default=None, description="Which of the concepts this render is.")
 
 
 class UploadedBookCover(_BookCoverBase):
@@ -220,6 +241,7 @@ class Stores:
     def __init__(self, request: Request) -> None:
         state = request.app.state
         self.books, self.covers, self.images = state.books, state.covers, state.cover_images
+        self.cores = state.cores
 
 
 Deps = Annotated[Stores, Depends()]
@@ -282,15 +304,98 @@ def _published(since: datetime | None = None) -> dict:
     return {"status": "published", "published_at": since or datetime.now(UTC)}
 
 
+# --- The Buchkern and its concepts ---------------------------------------------
+
+
+def _title_details(book: Book) -> dict[str, str]:
+    """The title data Prompt A reads, under the names it knows them by."""
+    return {
+        "Titel": book.title, "Untertitel": book.subtitle, "Autor*in": book.author,
+        "Verlag": book.publisher, "Kategorie": book.category, "Ausgabe": book.format,
+        "Seiten": str(book.pages), "Klappentext": book.blurb,
+    }
+
+
+def _fingerprint(book: Book) -> str:
+    """Changes when the book does, so a stale Buchkern is rebuilt."""
+    raw = json.dumps(_title_details(book), sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+async def _book_core(
+    stores: Stores, book_id: ObjectId, book: Book, *, refresh: bool = False
+) -> dict | None:
+    """The cached Buchkern, or a fresh one: research, then Prompt A. None without Claude."""
+    fingerprint = _fingerprint(book)
+    if not refresh:
+        cached = await run_in_threadpool(cover_store.get_core, stores.cores, book_id)
+        if cached and cached["fingerprint"] == fingerprint:
+            return cached
+    details = _title_details(book)
+    found = await covers_core.research(details)
+    core = await covers_core.write_core(
+        details, found, publisher=book.publisher, imprint=formalities(book)["imprint"]
+    )
+    if core is None:
+        return None
+    doc = {
+        "fingerprint": fingerprint,
+        "core": core.model_dump(),
+        "research": found.notes if found else None,
+        "sources": found.sources if found else [],
+        "created_at": datetime.now(UTC),
+    }
+    return await run_in_threadpool(cover_store.put_core, stores.cores, book_id, doc)
+
+
+async def _concept_brief(
+    stores: Stores, book_id: ObjectId, book: Book, type: str,
+    concepts: dict | None, index: int,
+) -> tuple[Any, dict, list[str]] | None:
+    """The brief for concept ``index``, writing concepts unless ``concepts`` holds them."""
+    if not covers_core.enabled():
+        return None
+    record = await _book_core(stores, book_id, book)
+    if record is None:
+        return None
+    core, mood = covers_core.BookCore.model_validate(record["core"]), MOODS[type]
+    if concepts is None:
+        written = await covers_concepts.write_concepts(core, mood, publisher=book.publisher)
+        if written is None:
+            return None
+        concepts = written.model_dump()
+    parsed = covers_concepts.concepts_schema(mood).model_validate(concepts)
+    if index >= len(parsed.concepts):
+        raise HTTPException(422, f"this cover has only {len(parsed.concepts)} concepts")
+    fit = getattr(core.fit, type)
+    notes = [] if fit != "ungeeignet" else [
+        f"the Buchkern rates this title „ungeeignet“ for {PROFILES[type].label}"
+    ]
+    brief = covers_concepts.to_direction(core, mood, parsed, index)
+    meta = {"source": "concept", "concept": index, "fit": fit, "sources": record["sources"]}
+    return brief, {"concepts": concepts, "concept": index, "meta": meta}, notes
+
+
 async def _render(
-    stores: Stores, cover_id: str, book: Book, type: str, options: dict
+    stores: Stores, cover_id: str, book: Book, type: str, options: dict,
+    *, book_id: ObjectId, concepts: dict | None = None, concept: int = 0,
 ) -> dict:
     """Generate from the book's current details, for ``type``; store the PNG."""
     try:
         request = CoverRequest.model_validate({**book_defaults(book), **options, "mood": type})
     except ValidationError as exc:
         raise RequestValidationError(exc.errors()) from exc
-    result = await create_cover(**request.model_dump())
+    planned = await _concept_brief(stores, book_id, book, type, concepts, concept)
+    extra: dict = {}
+    if planned is None:
+        result = await create_cover(**request.model_dump())
+    else:
+        brief, extra, notes = planned
+        # The Buchkern's Typo-Daten decide the genre line; the book's category was its input.
+        result = await create_cover(
+            **request.model_dump(exclude={"genre_line"}), brief=brief, brief_meta=extra.pop("meta")
+        )
+        result["notes"] = notes + result["notes"]
     image_id = await run_in_threadpool(cover_store.put_image, stores.images, cover_id, result["png"])
     color = result["art_direction"]["ground"].lower()
     return {
@@ -301,6 +406,8 @@ async def _render(
         **_image_fields(image_id, color),
         "options": options,
         "request": request.model_dump(mode="json"),
+        "concepts": extra.get("concepts"),
+        "concept": extra.get("concept"),
     }
 
 
@@ -319,7 +426,7 @@ async def create_book_cover(slug: str, body: BookCoverRequest, stores: Deps) -> 
     book_id, book = await _book(stores, slug)
     cover_id = _new_cover_id()
     options = body.model_dump(exclude_unset=True, exclude={"type"})
-    fields = await _render(stores, cover_id, book, body.type, options)
+    fields = await _render(stores, cover_id, book, body.type, options, book_id=book_id)
     doc = {"id": cover_id, "book_id": book_id, "type": body.type, "status": "draft",
            "published_at": None, **fields}
     doc = await run_in_threadpool(cover_store.insert, stores.covers, doc)
@@ -360,13 +467,21 @@ async def regenerate_book_cover(
     book_id, book = await _book(stores, slug)
     old = await _cover(stores, book_id, cover_id)
     type = body.type or old["type"]
+    # A stored concept belongs to the type it was written for.
+    if body.concept is not None and (type != old["type"] or not old.get("concepts")):
+        raise HTTPException(422, "this cover has no stored concepts for that type; regenerate without `concept`")
     # Only the brief text carries over: covers made before the manual options went
     # may still store them, and they must not come back through the stored copy.
     options = {k: v for k, v in old["options"].items() if k == "text"}
     options |= body.model_dump(exclude_unset=True, exclude={"type"})
     # The new image is stored before the old one goes, so a failed render
     # leaves the cover as it was.
-    fields = {**await _render(stores, cover_id, book, type, options), "type": type}
+    reuse = old.get("concepts") if body.concept is not None else None
+    fields = await _render(
+        stores, cover_id, book, type, options,
+        book_id=book_id, concepts=reuse, concept=body.concept or 0,
+    )
+    fields["type"] = type
     doc = await _update(stores, book_id, cover_id, fields)
     await asyncio.gather(
         run_in_threadpool(cover_store.delete_image, stores.images, old["image_id"]),
@@ -404,6 +519,35 @@ async def delete_book_cover(slug: str, cover_id: str, stores: Deps) -> None:
         run_in_threadpool(books_db.remove_cover_entry, stores.books, book_id, cover_id),
         run_in_threadpool(cover_store.delete_image, stores.images, doc["image_id"]),
     )
+
+
+class BookCoreRecord(BaseModel):
+    book: str
+    core: covers_core.BookCore
+    research: str | None = Field(description="The notes from Wikipedia and Goodreads.")
+    sources: list[str] = Field(description="The pages the research drew on.")
+    updated_at: datetime
+
+
+@router.get("/books/{slug}/core", response_model=BookCoreRecord)
+async def get_book_core(slug: str, stores: Deps) -> BookCoreRecord:
+    book_id = await _book_id(stores, slug)
+    record = await run_in_threadpool(cover_store.get_core, stores.cores, book_id)
+    if record is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "no Buchkern yet; generate a cover or POST here")
+    return BookCoreRecord.model_validate({**record, "book": slug})
+
+
+@router.post("/books/{slug}/core", response_model=BookCoreRecord)
+async def rebuild_book_core(slug: str, stores: Deps) -> BookCoreRecord:
+    """Research the book again and rewrite its Buchkern. Costs a few web searches."""
+    book_id, book = await _book(stores, slug)
+    if not covers_core.enabled():
+        raise HTTPException(status.HTTP_409_CONFLICT, "the Buchkern needs Claude as director")
+    record = await _book_core(stores, book_id, book, refresh=True)
+    if record is None:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Claude is unavailable; see the logs")
+    return BookCoreRecord.model_validate({**record, "book": slug})
 
 
 @router.post("/covers/upload", response_model=BookCover, status_code=status.HTTP_201_CREATED)
