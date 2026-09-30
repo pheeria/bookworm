@@ -312,8 +312,12 @@ def test_unknown_format_is_a_422(output_dir):
 
 
 def test_image_route_refuses_traversal(output_dir):
-    assert client.get("/covers/abc123/../../etc/passwd").status_code == 404
-    assert client.get("/covers/..%2F..%2Fetc/front.png").status_code == 404
+    # A PNG one level up, where a cover id of ".." would point; and a real one.
+    (output_dir.parent / "front.png").write_bytes(b"\x89PNG outside")
+    (output_dir / "abc123").mkdir()
+    (output_dir / "abc123" / "front.png").write_bytes(b"\x89PNG inside")
+    assert client.get("/covers/abc123/front.png").status_code == 200
+    assert client.get("/covers/%2E%2E/front.png").status_code == 404
     assert client.get("/covers/abc123/front.svg").status_code == 404
 
 

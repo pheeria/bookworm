@@ -9,7 +9,7 @@ family and palette the vector typesetting will use.
 ``to_direction`` turns one concept into the ``ArtDirection`` the renderer takes,
 assembling the image prompt in the house's master format -- except that the image
 model never sets type: the typography is set afterwards, exactly, as vector
-outlines. The prompt tells it where the type will go instead.
+outlines, where the concept's lettering says.
 """
 
 from functools import cache
@@ -20,7 +20,6 @@ from pydantic import BaseModel, Field, create_model
 from .artdirection import DRAWN_MOTIFS, ArtDirection, seed_from
 from .core import BookCore, parse
 from .lettering import Lettering, TitleCase
-from .lettering import zone_text as lettering_zone
 from .moods import Mood
 from .palettes import HEX
 from .profiles import PROFILES
@@ -32,40 +31,15 @@ CONSTANTS = (
     "border or frame, brand names, real persons, protected artworks"
 )
 
-#: Where each layout sets the type, so the picture leaves that zone calm.
-TYPE_ZONES = {
-    "illustrated_full": (
-        "keep the subject in the upper two thirds; the lower third will be covered by the type panel"
-    ),
-    "photo_duotone": (
-        "the image fills the upper part of the cover, above the type; let the subject fill the frame"
-    ),
-    "kiwi_flat": (
-        "the image fills the lower half of the cover, below the type; let the subject fill the frame"
-    ),
-    "rororo_band": (
-        "a solid colour band will cross the middle; keep the subject above or below the middle"
-    ),
-    "didone_centre": (
-        "a centred vignette framed by type above and below; one compact subject"
-    ),
-    "type_block": "no image; the type fills the cover",
-}
-
-def zone_text(template: str, lettering: Lettering) -> str:
-    """What the image prompt says about where the type will go."""
-    return lettering_zone(lettering) if template == "picture" else TYPE_ZONES[template]
-
-
 class Concept(BaseModel):
     motif: str = Field(description="Motif, in English, concrete and visible.")
     twist: str = Field(description="Twist (Kniff), in English.")
-    composition: str = Field(description="Composition, in English, keeping the area the type needs calm.")
+    composition: str = Field(description="Composition, in English, keeping the lettering's area calm.")
     colour: str = Field(description="Palette, in English: 2-3 named colours.")
     mode: Literal["a", "b", "c"] | None = Field(description="DISKURS only: the mode; otherwise null.")
     template: str
     lettering: Lettering = Field(
-        description="picture: where and how the type is set on the image; the picture keeps that area calm."
+        description="Where and how the type is set on the image; the picture keeps that area calm."
     )
     type_family: str
     title_case: TitleCase
@@ -125,11 +99,9 @@ Schriftfarbe muss auf dem Grund deutlich lesbar sein.{extra}
 - Leitplanken sind verbindlich, Tabus und Konstanten gelten immer.
 - Beschreibe Motiv, Kniff, Komposition und Farbe in sichtbaren, konkreten Begriffen \
 auf Englisch: Material, Licht, Tageszeit, Maßstab, Oberfläche.
-- Kein Text im Bild: Die Typografie wird danach exakt gesetzt. Wähle dafür je Konzept \
-das Layout (template) und die Schriftfamilie (type_family) und plane die Komposition \
-so, dass die Typo-Zone des Layouts ruhig bleibt:
-{zones}
-- Bei picture planst du die Beschriftung (lettering): Position (oben, unten, links \
+- Kein Text im Bild: Die Typografie wird danach exakt und direkt auf das Bild gesetzt. \
+Wähle dafür je Konzept die Schriftfamilie (type_family) und plane die Beschriftung \
+(lettering): Position (oben, unten, links \
 oder rechts als schmale Spalte, diagonal), Größe, Ausrichtung, bei diagonal den \
 Winkel, und die Farben von Titel und übrigem Text -- einfarbig oder als Verlauf aus \
 zwei Farben des Bildes. Die drei Konzepte unterscheiden sich in Position und \
@@ -180,18 +152,13 @@ def _extra(mood: Mood, core: BookCore) -> str:
 
 async def write_concepts(core: BookCore, mood: Mood, *, publisher: str) -> Concepts | None:
     """Three concepts for this title and reader type, or None if Claude is unavailable."""
-    zones = "\n".join(
-        f"  {t}: " + ("the type is set straight onto the picture, where the lettering says"
-                      if t == "picture" else TYPE_ZONES[t])
-        for t in mood.templates
-    )
     content = (
         f"BUCHKERN:\n{_brief(core)}\n\nPROFIL:\n{_profile(mood)}\n\nKONSTANTEN:\n"
         f"Niemals im Bild: {CONSTANTS}."
     )
     written = await parse(
         concepts_schema(mood),
-        system=_SYSTEM.format(publisher=publisher, extra=_extra(mood, core), zones=zones),
+        system=_SYSTEM.format(publisher=publisher, extra=_extra(mood, core)),
         content=content, what="concepts",
     )
     return written if written and written.concepts else None
@@ -211,7 +178,7 @@ def image_prompt(core: BookCore, mood: Mood, concept: Concept, concepts: Concept
         "Book cover artwork, print-ready, with no text of any kind: the typography is "
         f"set separately. Story: {core.place_and_time}, the mood is {', '.join(core.tone)}. "
         f"Motif: {concept.motif}. Twist: {concept.twist}. "
-        f"Composition: {concept.composition}; {zone_text(concept.template, concept.lettering)}. "
+        f"Composition: {concept.composition}. "
         f"Colour: {concept.colour}. Style: {style}.{respect} Avoid: {avoid}."
     )
 
@@ -225,8 +192,7 @@ def to_direction(core: BookCore, mood: Mood, concepts: Concepts, index: int = 0)
         keywords=list(core.motifs),
         template=concept.template,  # type: ignore[arg-type]
         type_family=concept.type_family,  # type: ignore[arg-type]
-        # type_block has no room for a picture; the others paint the concept.
-        artwork="none" if concept.template == "type_block" else "generated",
+        artwork="generated",
         # Drawn only if the image model is unavailable.
         motif=DRAWN_MOTIFS[seed % len(DRAWN_MOTIFS)],  # type: ignore[arg-type]
         ground=concept.ground,

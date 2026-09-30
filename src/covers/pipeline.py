@@ -20,7 +20,7 @@ from .artdirection import (
     fallback_direction,
     seed_from,
 )
-from .director_openai import direct_openai, direct_prompt_from_text
+from .director_openai import direct_openai
 from .formats import geometry, px, resolve_format
 from .layout import Content, Ctx, artwork_plan
 from .moods import MOODS
@@ -41,6 +41,14 @@ async def _adjust_lettering(
     # Validated whole, so the blackletter casing rule holds for the new face too.
     adjusted = ArtDirection.model_validate(direction.model_dump() | placed.model_dump(exclude={"note"}))
     return adjusted, {"source": "vision", "note": placed.note}
+
+
+def _with_motif(direction: ArtDirection, seed: int, *, drawn: bool = False) -> ArtDirection:
+    """A cover drawing a procedural motif -- asked for, or standing in for a picture
+    that could not be painted -- always has one, even if the brief chose none."""
+    if direction.motif != "none" or not (drawn or direction.artwork == "procedural"):
+        return direction
+    return direction.model_copy(update={"motif": DRAWN_MOTIFS[seed % len(DRAWN_MOTIFS)]})
 
 
 async def create_cover(
@@ -81,12 +89,7 @@ async def create_cover(
     elif director == "openai":
         direction, ad_meta = await direct_openai(text, title, author, style=style, mood=profile)
     elif director == "none":
-        # No text model at all: the deterministic brief decides everything except
-        # the picture, whose prompt is composed locally from the book's own words.
         direction = fallback_direction(text, title, author, style, profile)
-        direction = direction.model_copy(
-            update={"image_prompt": direct_prompt_from_text(text, style)}
-        )
         ad_meta = {"source": "none", "model": None, "style": style}
     else:
         direction, ad_meta = await direct(text, title, author, style=style, mood=profile)
@@ -106,6 +109,7 @@ async def create_cover(
 
     if seed is None:
         seed = seed_from(text, title, author, direction.template, direction.ground)
+    direction = _with_motif(direction, seed)
 
     notes: list[str] = []
     artwork_uri = None
@@ -118,6 +122,11 @@ async def create_cover(
             f"template {direction.template!r} is typographic; generated artwork skipped"
         )
     elif direction.artwork == "generated":
+        if direction.template == "picture":
+            # Whoever wrote the prompt, the picture leaves room for the type.
+            direction = direction.model_copy(update={
+                "image_prompt": f"{direction.image_prompt} {lettering.zone_text(direction.lettering)}."
+            })
         hexes = (direction.ground, direction.ink, direction.accent, direction.secondary)
         art = await imagegen.generate(
             direction.image_prompt,
@@ -135,26 +144,24 @@ async def create_cover(
                 f"image generation with {image_model} unavailable ({art.reason}); used a "
                 "procedural motif instead"
             )
-            if direction.motif == "none":
-                direction = direction.model_copy(
-                    update={"motif": DRAWN_MOTIFS[seed % len(DRAWN_MOTIFS)]}
-                )
+            direction = _with_motif(direction, seed, drawn=True)
         else:
             artwork_image = art.image
             encoding = asyncio.create_task(asyncio.to_thread(imagegen.to_data_uri, art.image))
             art_meta = dict(art.meta)
             art_meta["placement_mm"] = [round(v, 2) for v in plan]
-            art_meta["effective_dpi"] = imagegen.effective_dpi(
-                art.meta["native_px"][1], plan[3]
+            art_meta["effective_dpi"] = min(
+                imagegen.effective_dpi(art.meta["native_px"][0], plan[2]),
+                imagegen.effective_dpi(art.meta["native_px"][1], plan[3]),
             )
             if art_meta["effective_dpi"] < dpi:
                 notes.append(
                     f"artwork is {art_meta['effective_dpi']} dpi native over its "
                     f"placement and was resampled up to {dpi} dpi; type stays vector"
                 )
-            # Unless no text model is wanted at all, Claude looks at the picture before
-            # the type goes on; without credentials the look is skipped and the plan stands.
-            if direction.template == "picture" and director != "none":
+            # Claude looks at the picture before the type goes on; without
+            # credentials the look is skipped and the plan stands.
+            if direction.template == "picture" and director == "claude":
                 families = (type_family,) if type_family else (
                     profile.type_families if profile else TYPE_FAMILIES
                 )

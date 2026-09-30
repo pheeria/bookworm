@@ -18,7 +18,7 @@ from functools import cache
 from typing import TYPE_CHECKING, Annotated, Literal
 
 from PIL import ImageOps
-from pydantic import BaseModel, Field, create_model
+from pydantic import BaseModel, BeforeValidator, Field, create_model, field_validator
 
 from .core import parse
 from .palettes import HEX
@@ -28,7 +28,14 @@ if TYPE_CHECKING:
     from .artdirection import ArtDirection
 
 Location = Literal["top", "bottom", "left", "right", "diagonal"]
-Hex = Annotated[str, Field(pattern=HEX)]
+def _long_hex(value):
+    """``#abc`` as ``#aabbcc``: a short hex from the model is not worth failing over."""
+    if isinstance(value, str) and len(value) == 4 and value.startswith("#"):
+        return "#" + "".join(c * 2 for c in value[1:])
+    return value
+
+
+Hex = Annotated[str, BeforeValidator(_long_hex), Field(pattern=HEX)]
 TitleCase = Literal["upper", "title", "as_is"]
 
 #: The rising baseline of a diagonal title, in degrees (negative: rises to the right).
@@ -72,6 +79,13 @@ class Lettering(BaseModel):
         default=-20, ge=MIN_ANGLE, le=MAX_ANGLE,
         description=f"diagonal only: the title's baseline angle in degrees, {MIN_ANGLE} to {MAX_ANGLE}.",
     )
+    @field_validator("angle", mode="before")
+    @classmethod
+    def _clamp_angle(cls, value):
+        # Only a diagonal reads it, so an angle out of range elsewhere (0 for
+        # "horizontal", say) must not fail the whole answer.
+        return max(MIN_ANGLE, min(MAX_ANGLE, value)) if isinstance(value, int | float) else value
+
     title_ink: Ink | None = Field(
         default=None,
         description="The title's colour; it must read on the picture where the title sits. Null: the brief's ink.",

@@ -70,7 +70,7 @@ def test_importing_covers_is_inert(tmp_path):
     # A .env in the working directory is the host's business, not the library's.
     (tmp_path / ".env").write_text("COVERS_CANARY=leaked\n", encoding="utf-8")
 
-    result = subprocess.run(
+    result = subprocess.run(  # noqa: PLW1510 - the return code is asserted below
         [sys.executable, "-c", CHILD],
         cwd=tmp_path,
         capture_output=True,

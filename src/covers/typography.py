@@ -6,7 +6,6 @@ advances drive line fitting, the SVG and the PNG -- and it means the
 output carries no font dependency, which is what a repro house wants.
 """
 
-import logging
 import os
 from dataclasses import dataclass
 from functools import cache
@@ -18,10 +17,6 @@ from fontTools.pens.svgPathPen import SVGPathPen
 from fontTools.pens.transformPen import TransformPen
 
 from . import settings
-
-# fontTools only draws the pens here, but some faces trip warnings in its table
-# code that are harmless and drown out real output.
-logging.getLogger("fontTools").setLevel(logging.ERROR)
 
 BUNDLED_DIR = os.path.join(os.path.dirname(__file__), "fonts")
 _MAC_DIRS = (
@@ -488,5 +483,5 @@ def fit_display(
         if best is None or size > best.size + 1e-9:
             widths = [f.measure(ln, tracking) * size for ln in lines]
             best = TextBlock(lines, size, lead, tracking, widths)
-    assert best is not None
-    return best
+    # Nothing measurable (only zero-width characters, say): nothing to set.
+    return best or TextBlock([], 0.0, leading, tracking, [])

@@ -198,7 +198,10 @@ async def test_artwork_is_embedded_in_the_cover_and_reported(stub_openai, monkey
     )
     assert plan is not None
     assert meta["placement_mm"][3] == pytest.approx(round(plan[3], 2), abs=0.01)
-    assert meta["effective_dpi"] == imagegen.effective_dpi(1536, plan[3])
+    # The picture is cropped to fill the placement, so the tighter side decides.
+    assert meta["effective_dpi"] == min(
+        imagegen.effective_dpi(1024, plan[2]), imagegen.effective_dpi(1536, plan[3])
+    )
 
 
 async def test_upscaling_is_disclosed_in_the_notes(stub_openai):
@@ -270,21 +273,23 @@ async def test_openai_director_degrades_without_a_key(monkeypatch):
 
 
 @pytest.mark.parametrize("style", ["illustrated", "painterly", "typographic"])
-def test_direct_path_builds_a_prompt_from_the_book_text(style):
-    """director='none' runs no text model, so the prompt is composed locally."""
-    from covers.director_openai import (
-        _DIRECT_PREAMBLE,
-        DIRECT_TEXT_CHARS,
-        direct_prompt_from_text,
+def test_without_a_model_the_prompt_comes_from_the_book_text(style):
+    """director='none', and every fallback brief, compose the prompt locally."""
+    from covers.artdirection import (
+        _PROMPT_PREAMBLE,
+        PROMPT_TEXT_CHARS,
+        fallback_direction,
+        prompt_from_text,
     )
 
     text = "Zwei Schwestern erben das Haus ihrer Großmutter am Hafen. " * 40
-    prompt = direct_prompt_from_text(text, style)
+    prompt = prompt_from_text(text, style)
+    assert fallback_direction(text, "Das Erbe", "A. Autor", style).image_prompt == prompt
     assert "Zwei Schwestern" in prompt
     assert len(prompt) < len(text)
     assert "\n" not in prompt  # whitespace normalised for the image model
     # The book text is bounded; only the register preamble is added to it.
-    assert len(prompt) <= len(_DIRECT_PREAMBLE[style]) + DIRECT_TEXT_CHARS + 1
+    assert len(prompt) <= len(_PROMPT_PREAMBLE[style]) + PROMPT_TEXT_CHARS + 1
 
 
 async def test_none_director_makes_no_text_model_call(stub_openai):

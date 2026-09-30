@@ -8,12 +8,13 @@ Type is placed off the cap line rather than the baseline, because that is what t
 eye aligns to at display sizes.
 """
 
+import io
 import math
 from dataclasses import asdict, dataclass, replace
 from functools import cached_property
 from typing import Any
 
-from PIL import ImageOps
+from PIL import Image, ImageOps
 
 from . import motifs
 from .artdirection import ArtDirection
@@ -59,10 +60,25 @@ class Ctx:
 
     @cached_property
     def artwork_sample(self) -> Any:
-        """A small RGB copy of the artwork: averaging the colour under the type needs no more."""
-        if self.artwork_image is None:
+        """A small RGB copy of what is drawn in the artwork plan -- the picture, or
+        the motif standing in for it on its ground -- to average colours from."""
+        if self.artwork_image is not None:
+            return ImageOps.contain(self.artwork_image, (_SAMPLE_PX, _SAMPLE_PX)).convert("RGB")
+        plan = artwork_plan(self.direction, self.geo)
+        art = _artwork_or_motif(self, plan)
+        if not art:
             return None
-        return ImageOps.contain(self.artwork_image, (_SAMPLE_PX, _SAMPLE_PX)).convert("RGB")
+        from . import _cairo  # loads the native library; not needed to build SVG
+
+        x, y, w, h = plan
+        svg = (
+            f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="{_n(x)} {_n(y)} {_n(w)} {_n(h)}">'
+            f"{_rect(x, y, w, h, self.palette.ground)}{art}</svg>"
+        )
+        scale = _SAMPLE_PX / max(w, h)
+        png = _cairo.svg2png(bytestring=svg.encode(), output_width=round(w * scale),
+                             output_height=round(h * scale))
+        return Image.open(io.BytesIO(png)).convert("RGB")
 
 
 Rect = tuple[float, float, float, float]
@@ -127,10 +143,14 @@ def draw_label(
     fill: str,
     tracking: float = 0.12,
     weight: str = "regular",
+    max_width: float | None = None,
 ) -> tuple[str, float]:
-    """A single tracked-out line, used for author lines, genre lines and imprints."""
+    """A single tracked-out line, used for author lines, genre lines and imprints.
+    Set smaller where it would run past ``max_width``."""
     if not text:
         return "", cap_top
+    if max_width is not None:
+        size = _label_size(text, family, size, max_width, tracking, weight)
     f = face(family, weight)
     lx = _align_x(x, f.measure(text, tracking) * size, align)
     baseline = cap_top + f.cap_height * size
@@ -200,6 +220,7 @@ def _front_kiwi_flat(ctx: Ctx) -> str:
         c.author.upper(),
         fam,
         author_size,
+        max_width=measure,
         x=left,
         cap_top=b + m * 0.9,
         fill=p.ink,
@@ -285,6 +306,7 @@ def _front_rororo_band(ctx: Ctx) -> str:
         c.author.upper(),
         fam,
         author_size,
+        max_width=pw - 2 * m,
         x=b + pw / 2,
         cap_top=band_top - m * 0.7 - author_size,
         align="center",
@@ -358,6 +380,7 @@ def _front_type_block(ctx: Ctx) -> str:
         c.author.upper(),
         fam,
         author_size,
+        max_width=measure,
         x=left,
         cap_top=b + m * 0.9,
         fill=p.accent,
@@ -449,6 +472,7 @@ def _front_didone_centre(ctx: Ctx) -> str:
         c.author.upper(),
         fam,
         author_size,
+        max_width=measure,
         x=centre,
         cap_top=b + m * 1.7,
         align="center",
@@ -529,6 +553,7 @@ def _front_photo_duotone(ctx: Ctx) -> str:
         c.author.upper(),
         fam,
         author_size,
+        max_width=measure,
         x=left,
         cap_top=art_bottom + m * 0.7,
         fill=p.ink,
@@ -636,6 +661,7 @@ def _front_illustrated_full(ctx: Ctx) -> str:
         c.author.upper(),
         fam,
         author_size,
+        max_width=measure,
         x=panel_x + pad,
         cap_top=y,
         fill=p.accent,
@@ -700,7 +726,7 @@ def _ground_under(ctx: Ctx, rect: Rect) -> str:
     )
     if box[2] <= box[0] or box[3] <= box[1]:
         return ctx.palette.ground
-    r, g, b = img.crop(box).resize((1, 1), 4).getpixel((0, 0))  # 4: BOX
+    r, g, b = img.crop(box).resize((1, 1), Image.Resampling.BOX).getpixel((0, 0))
     return f"#{r:02x}{g:02x}{b:02x}"
 
 
@@ -781,11 +807,12 @@ def _front_picture(ctx: Ctx) -> str:
 
     if lt.location == "diagonal":
         author_top, genre_top = b + m * 1.1, imprint_top - m * 0.8 - genre_size
-        for text, size, top, style in (
-            (c.author, author_size, author_top, _AUTHOR), (c.genre_line, genre_size, genre_top, _GENRE),
+        for name, text, size, top, style in (
+            ("author", c.author, author_size, author_top, _AUTHOR),
+            ("genre", c.genre_line, genre_size, genre_top, _GENRE),
         ):
             area = (b, top - m * 0.3, pw, size + m * 0.6)
-            defs, fill = _paint(text_ink, _ground_under(ctx, area), area, f"{style[1]}-ink")
+            defs, fill = _paint(text_ink, _ground_under(ctx, area), area, f"{name}-ink")
             out.append(defs)
             label(text, size, top, fill, style)
         band = (author_top + author_size * 2.2, genre_top - genre_size * 1.2)

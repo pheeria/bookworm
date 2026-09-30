@@ -17,18 +17,13 @@ def openai_text_model() -> str:
 
 
 def openai_image_model() -> str:
-    """The OpenAI model used when a cover asks for ``image_model="openai"``.
-
-    COVERS_IMAGE_MODEL is the name this setting had before other image models came.
-    """
-    return os.environ.get("COVERS_OPENAI_IMAGE_MODEL") or os.environ.get(
-        "COVERS_IMAGE_MODEL", "gpt-image-2"
-    )
+    """The OpenAI model used when a cover asks for ``image_model="openai"``."""
+    return os.environ.get("COVERS_OPENAI_IMAGE_MODEL", "gpt-image-2")
 
 
 def director() -> str:
     """Who writes the brief when a request does not say: claude, openai or none."""
-    return os.environ.get("COVERS_DIRECTOR", "claude")
+    return os.environ.get("COVERS_DIRECTOR", "claude").strip().lower()
 
 
 def image_quality() -> str:
@@ -41,7 +36,7 @@ def output_dir() -> Path:
 
 
 def log_level() -> str:
-    return os.environ.get("COVERS_LOG_LEVEL", "INFO")
+    return os.environ.get("COVERS_LOG_LEVEL", "INFO").strip().upper()
 
 
 def system_fonts() -> bool:

@@ -74,7 +74,7 @@ class CoverRequest(BaseModel):
         default=DEFAULT_IMAGE_MODEL,
         description=(
             "Who paints the artwork. nano-banana-pro and flux-2-pro run on fal "
-            "(FAL_API_KEY); openai is COVERS_IMAGE_MODEL, gpt-image-2 by default "
+            "(FAL_API_KEY); openai is COVERS_OPENAI_IMAGE_MODEL, gpt-image-2 by default "
             "(OPENAI_API_KEY). The type is set afterwards either way."
         ),
     )

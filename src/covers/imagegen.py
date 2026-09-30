@@ -177,9 +177,13 @@ async def generate(
     data, meta = painted
 
     # Decoding, resampling and toning a multi-megapixel image is CPU-bound.
-    art, (native_w, native_h) = await asyncio.to_thread(
-        _process, data, target_w_px, target_h_px, treatment, duotone_colours
-    )
+    try:
+        art, (native_w, native_h) = await asyncio.to_thread(
+            _process, data, target_w_px, target_h_px, treatment, duotone_colours
+        )
+    except (OSError, ValueError) as exc:  # not an image after all
+        log.warning("image from %s could not be decoded: %s", model, exc)
+        return Unavailable(f"{model} returned an unreadable image")
     return Artwork(
         image=art,
         meta={
@@ -196,7 +200,8 @@ async def _openai(prompt: str, aspect: float, quality: str) -> tuple[str, dict] 
     import openai
 
     model, size = settings.openai_image_model(), _nearest(_OPENAI_SIZES, aspect)
-    client = openai.AsyncOpenAI(timeout=180.0)
+    # No retries: a slow render retried would be paid for, and waited for, again.
+    client = openai.AsyncOpenAI(timeout=180.0, max_retries=0)
     try:
         response = await client.images.generate(
             model=model, prompt=prompt, size=size, quality=quality, output_format="png", n=1,

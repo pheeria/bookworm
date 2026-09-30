@@ -14,7 +14,7 @@ import pytest
 from books.db import SEED
 from covers import concepts as covers_concepts
 from covers.core import BookCore
-from covers.lettering import Lettering
+from covers.lettering import Lettering, zone_text
 from covers.moods import MOODS
 
 SEEDED = json.loads(SEED.read_text(encoding="utf-8"))
@@ -94,7 +94,11 @@ class _Claude:
     async def create(self, **kw):
         self.calls.append(("research", kw))
         if self.pause_first and len([c for c in self.calls if c[0] == "research"]) == 1:
-            return SimpleNamespace(stop_reason="pause_turn", content=[])
+            return SimpleNamespace(stop_reason="pause_turn", content=[
+                SimpleNamespace(type="web_search_tool_result", content=[
+                    SimpleNamespace(url="https://www.goodreads.com/book/show/1"),
+                ]),
+            ])
         return SimpleNamespace(stop_reason="end_turn", content=[
             SimpleNamespace(type="web_search_tool_result", content=[
                 SimpleNamespace(url="https://de.wikipedia.org/wiki/Alleinruhelage"),
@@ -150,7 +154,7 @@ def test_a_cover_rests_on_the_researched_core_and_a_concept(client, claude):
 
     prompt = cover["art_direction"]["image_prompt"]
     assert "Motif: a half-painted wooden house" in prompt
-    assert covers_concepts.zone_text("picture", Lettering(location="top")) in prompt
+    assert zone_text(Lettering(location="top")) in prompt
     assert "upper third" in prompt and "nothing behind them" in prompt
     assert "no text of any kind" in prompt and '"Alleinruhelage"' not in prompt
 
@@ -200,6 +204,10 @@ def test_a_paused_search_is_resumed(client, monkeypatch):
     client.post(f"/books/{SLUG}/covers", json={"type": "heart"})
     _, resumed = (kw for kind, kw in calls if kind == "research")
     assert resumed["messages"][-1]["role"] == "assistant"  # the paused turn, sent back
+    # What the paused segment found is kept alongside what the resumed one did.
+    assert client.get(f"/books/{SLUG}/core").json()["sources"] == [
+        "https://www.goodreads.com/book/show/1", "https://de.wikipedia.org/wiki/Alleinruhelage",
+    ]
 
 
 def test_without_claude_the_plain_brief_still_makes_the_cover(client, monkeypatch):
@@ -273,8 +281,10 @@ def test_a_placement_is_held_to_the_mood():
     schema = placement_schema(MOODS["heart"].type_families)
     with pytest.raises(pydantic.ValidationError):
         schema.model_validate({**PLACEMENT, "type_family": "slab"})
-    with pytest.raises(pydantic.ValidationError):
-        schema.model_validate({**PLACEMENT, "lettering": {**PLACEMENT["lettering"], "angle": -60}})
+    # A slip in a field only the renderer reads is mended rather than fatal.
+    mended = schema.model_validate({**PLACEMENT, "lettering": {
+        **PLACEMENT["lettering"], "angle": 0, "text_ink": {"color": "#fff"}}})
+    assert mended.lettering.angle == -12 and mended.lettering.text_ink.color == "#ffffff"
 
 
 def test_concepts_stored_before_lettering_still_load():
@@ -282,3 +292,27 @@ def test_concepts_stored_before_lettering_still_load():
     del old["lettering"]
     parsed = covers_concepts.load_concepts(MOODS["heart"], {**CONCEPTS, "concepts": [old]})
     assert parsed.concepts[0].lettering.location == "bottom"
+
+
+def test_a_stored_concept_renders_without_claude(client, claude, monkeypatch):
+    cover = client.post(f"/books/{SLUG}/covers", json={"type": "heart"}).json()
+    monkeypatch.setenv("COVERS_DIRECTOR", "none")
+    client.put(f"/books/{SLUG}", json={**BOOK, "pages": BOOK["pages"] + 1})  # the core is now stale
+    again = client.post(f"/books/{SLUG}/covers/{cover['id']}/regenerate", json={"concept": 2}).json()
+    assert again["art_direction_meta"]["source"] == "concept" and again["concept"] == 2
+    assert kinds(claude) == ["research", "core", "concepts"]  # nothing asked again
+
+
+def test_a_failed_search_is_not_kept(client, monkeypatch):
+    calls: list = []
+
+    class _SearchFails(_Claude):
+        async def create(self, **kw):
+            raise TypeError("the search failed")
+
+    monkeypatch.setenv("COVERS_DIRECTOR", "claude")
+    monkeypatch.setattr("anthropic.AsyncAnthropic", lambda **_kw: _SearchFails(calls))
+    cover = client.post(f"/books/{SLUG}/covers", json={"type": "heart"}).json()
+    assert cover["art_direction_meta"]["source"] == "concept"  # the cover goes ahead
+    assert client.get(f"/books/{SLUG}/core").status_code == 404  # but its core is not kept
+    assert client.post(f"/books/{SLUG}/core").status_code == 503

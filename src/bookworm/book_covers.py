@@ -52,7 +52,7 @@ from fastapi import (
 )
 from fastapi.concurrency import run_in_threadpool
 from fastapi.exceptions import RequestValidationError
-from PIL import Image
+from PIL import ExifTags, Image, ImageCms, ImageOps
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
 from books import db as books_db
@@ -156,7 +156,8 @@ def book_defaults(book: Book) -> dict[str, Any]:
     # The subtitle is worth briefing on only when it says more than the genre.
     adds = book.subtitle.strip().casefold() not in ("", book.category.strip().casefold())
     return {
-        "text": f"{book.subtitle}. {book.blurb}" if adds else book.blurb,
+        # A book without a blurb is still briefed, on its title.
+        "text": (f"{book.subtitle}. {book.blurb}" if adds else book.blurb).strip() or book.title,
         "title": book.title,
         "author": book.author,
         "genre_line": book.category,
@@ -205,10 +206,11 @@ def theme_for(color: str) -> BookTheme:
 
 
 def dominant_color(img: Image.Image) -> str:
-    """The cover's most common colour once reduced to five: its ground, usually."""
-    # Shrink before converting, so a large upload is never copied at full size.
-    small = img.resize((96, 144), Image.Resampling.BOX).convert("RGB")
-    quantized = small.quantize(colors=5, method=Image.Quantize.MEDIANCUT)
+    """The cover's most common colour once reduced to five: its ground, usually.
+    Transparency counts as white, the page it would sit on."""
+    small = img.convert("RGBA").resize((96, 144), Image.Resampling.BOX)
+    flat = Image.alpha_composite(Image.new("RGBA", small.size, "white"), small).convert("RGB")
+    quantized = flat.quantize(colors=5, method=Image.Quantize.MEDIANCUT)
     _, index = max(quantized.getcolors())
     return _hex(*quantized.getpalette()[index * 3 : index * 3 + 3])
 
@@ -217,22 +219,45 @@ def dominant_color(img: Image.Image) -> str:
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 
 
+def _needs_conversion(img: Image.Image) -> bool:
+    rotated = img.getexif().get(ExifTags.Base.Orientation, 1) != 1
+    return rotated or img.mode not in ("RGB", "RGBA")
+
+
+def _as_rgb(img: Image.Image) -> Image.Image:
+    """``img`` upright, in 8-bit sRGB, with an alpha channel if it had transparency."""
+    img = ImageOps.exif_transpose(img)
+    if img.mode in ("RGB", "RGBA"):
+        return img
+    if img.mode in ("I;16", "I;16B", "I;16L", "I"):
+        # Wide greys: scale to 8 bits rather than let convert() clip them to white.
+        top = 2**16 - 1 if img.mode.startswith("I;16") else 2**32 - 1
+        img = img.point(lambda v: v * 255 / top, "L")
+    if icc := img.info.get("icc_profile"):
+        # A print (CMYK) file: through its own profile, not naively; the profile
+        # describes the old colours, so it does not come along.
+        src = ImageCms.ImageCmsProfile(io.BytesIO(icc))
+        img = ImageCms.profileToProfile(img, src, ImageCms.createProfile("sRGB"), outputMode="RGB")
+        img.info.pop("icc_profile", None)
+    transparent = "A" in img.getbands() or "transparency" in img.info
+    return img.convert("RGBA" if transparent else "RGB")
+
+
 def _decode_upload(data: bytes) -> tuple[bytes, str]:
     """The upload as PNG, and its colour. 422 for anything that is not an image."""
     try:
         with Image.open(io.BytesIO(data)) as img:
             img.load()
-            color = dominant_color(img)
             # Stored as PNG like every other cover, so /cover-images serves one type.
-            # A PNG that is already RGB or RGBA is kept exactly as uploaded.
-            if img.format == "PNG" and img.mode in ("RGB", "RGBA"):
-                return data, color
-            if img.mode not in ("RGB", "RGBA"):
-                img = img.convert("RGBA" if "A" in img.getbands() else "RGB")
+            # A PNG that needs no change is kept exactly as uploaded.
+            if img.format == "PNG" and not _needs_conversion(img):
+                return data, dominant_color(img)
+            converted = _as_rgb(img)
             out = io.BytesIO()
-            img.save(out, format="PNG")
-            return out.getvalue(), color
-    except (OSError, Image.DecompressionBombError) as exc:
+            converted.save(out, format="PNG")
+            return out.getvalue(), dominant_color(converted)
+    # Pillow reports a damaged file in many ways; each is the caller's bad image.
+    except (OSError, ValueError, SyntaxError, IndexError, EOFError, Image.DecompressionBombError) as exc:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT, "the file is not an image Pillow can read"
         ) from exc
@@ -339,6 +364,10 @@ async def _book_core(
             return cached
     details = _title_details(book)
     found = await covers_core.research(details)
+    # A failed search is not the same as finding nothing: a rebuild asked for
+    # fails, and a cover goes ahead on this core without it being kept.
+    if found is None and refresh:
+        return None
     core = await covers_core.write_core(
         details, found, publisher=book.publisher, imprint=formalities(book)["imprint"]
     )
@@ -347,10 +376,11 @@ async def _book_core(
     doc = {
         "fingerprint": fingerprint,
         "core": core.model_dump(),
-        "research": found.notes if found else None,
+        "research": (found.notes or None) if found else None,
         "sources": found.sources if found else [],
-        "created_at": datetime.now(UTC),
     }
+    if found is None:
+        return doc
     return await run_in_threadpool(cover_store.put_core, stores.cores, book_id, doc)
 
 
@@ -358,10 +388,17 @@ async def _concept_brief(
     stores: Stores, book_id: ObjectId, book: Book, type: str,
     concepts: dict | None, index: int,
 ) -> tuple[Any, dict, list[str]] | None:
-    """The brief for concept ``index``, writing concepts unless ``concepts`` holds them."""
-    if not covers_core.enabled():
+    """The brief for concept ``index``, writing concepts unless ``concepts`` holds them.
+
+    Stored concepts need no Claude: they are rendered from the Buchkern already
+    kept, even if the book has changed since.
+    """
+    if concepts is not None:
+        record = await run_in_threadpool(cover_store.get_core, stores.cores, book_id)
+    elif covers_core.enabled():
+        record = await _book_core(stores, book_id, book)
+    else:
         return None
-    record = await _book_core(stores, book_id, book)
     if record is None:
         return None
     core, mood = covers_core.BookCore.model_validate(record["core"]), MOODS[type]
@@ -406,13 +443,12 @@ async def _render(
     color = result["art_direction"]["ground"].lower()
     return {
         **{k: result[k] for k in CoverResult.model_fields},
-        # A hash-derived seed can exceed BSON's 64-bit ints; BookCover reads it back.
-        "seed": str(result["seed"]),
         "source": "generated",
         **_image_fields(image_id, color),
         "options": options,
         "request": request.model_dump(mode="json"),
-        "concepts": extra.get("concepts"),
+        # Kept even when the plain brief made this render, so they can still be asked for.
+        "concepts": extra.get("concepts", concepts),
         "concept": extra.get("concept"),
     }
 
@@ -431,7 +467,7 @@ async def _sync_entry(stores: Stores, book_id: ObjectId, doc: dict, *, new: bool
 async def create_book_cover(slug: str, body: BookCoverRequest, stores: Deps) -> BookCover:
     book_id, book = await _book(stores, slug)
     cover_id = _new_cover_id()
-    options = body.model_dump(exclude_unset=True, exclude={"type"})
+    options = body.model_dump(exclude_unset=True, exclude_none=True, exclude={"type"})
     fields = await _render(stores, cover_id, book, body.type, options, book_id=book_id)
     doc = {"id": cover_id, "book_id": book_id, "type": body.type, "status": "draft",
            "published_at": None, **fields}
@@ -508,10 +544,8 @@ async def publish_book_cover(slug: str, cover_id: str, stores: Deps) -> BookCove
 @router.post("/books/{slug}/covers/{cover_id}/unpublish", response_model=BookCover)
 async def unpublish_book_cover(slug: str, cover_id: str, stores: Deps) -> BookCover:
     book_id = await _book_id(stores, slug)
-    doc, _ = await asyncio.gather(
-        _update(stores, book_id, cover_id, {"status": "draft", "published_at": None}),
-        run_in_threadpool(books_db.remove_cover_entry, stores.books, book_id, cover_id),
-    )
+    doc = await _update(stores, book_id, cover_id, {"status": "draft", "published_at": None})
+    await run_in_threadpool(books_db.remove_cover_entry, stores.books, book_id, cover_id)
     return _response(doc, slug)
 
 
@@ -592,10 +626,9 @@ async def upload_book_cover(
         "id": cover_id, "book_id": book_id, "type": type, "source": "uploaded",
         "options": {}, **_published(), **_image_fields(image_id, color),
     }
-    doc, _ = await asyncio.gather(
-        run_in_threadpool(cover_store.insert, stores.covers, doc),
-        _sync_entry(stores, book_id, doc, new=True),
-    )
+    # The cover first: a book entry must never point at a cover that is not there.
+    doc = await run_in_threadpool(cover_store.insert, stores.covers, doc)
+    await _sync_entry(stores, book_id, doc, new=True)
     return _response(doc, book.slug)
 
 

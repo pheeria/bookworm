@@ -11,8 +11,8 @@ from covers.formats import DEFAULT_FORMAT, FORMATS
 
 #: (publisher, binding) -> wordmark, where a binding appears under its own imprint.
 IMPRINTS = {
-    ("Rowohlt", "Taschenbuch"): "rororo",
-    ("S. FISCHER", "Taschenbuch"): "Fischer Taschenbuch",
+    ("rowohlt", "taschenbuch"): "rororo",
+    ("s. fischer", "taschenbuch"): "Fischer Taschenbuch",
 }
 
 #: Houses without a format of their own use the general one for the binding.
@@ -36,5 +36,5 @@ def formalities(book: Book) -> dict[str, str]:
     """The cover fields the publisher fixes, whoever the cover is for."""
     return {
         "format": format_for(book.publisher, book.format),
-        "imprint": IMPRINTS.get((book.publisher, book.format), book.publisher),
+        "imprint": IMPRINTS.get((book.publisher.casefold(), book.format.casefold()), book.publisher),
     }

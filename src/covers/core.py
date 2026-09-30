@@ -131,27 +131,23 @@ def _title_data(details: dict[str, str]) -> str:
     return "\n".join(f"{name}: {value}" for name, value in details.items() if value)
 
 
-def client():
-    """The Anthropic client, or None when no credentials resolve."""
-    import anthropic
-
-    try:
-        return anthropic.AsyncAnthropic()
-    except Exception as exc:  # no credentials resolvable
-        log.info("book core skipped: %s", exc)
-        return None
+def _failed(what: str, exc: Exception, meta: dict | None) -> None:
+    log.warning("%s failed (%s)", what, exc)
+    if meta is not None:
+        meta["failure"] = str(exc)
 
 
 async def parse[T: BaseModel](
-    schema: type[T], *, system: str, content: str | list, what: str, max_tokens: int = 16000
+    schema: type[T], *, system: str, content: str | list, what: str,
+    max_tokens: int = 16000, meta: dict | None = None,
 ) -> T | None:
-    """One structured-output call to Claude; None without credentials, on an API
-    error or a refusal, so every caller can fall back."""
+    """One structured-output call to Claude; None without credentials, on an error
+    or a refusal, so every caller can fall back. ``meta``, if given, gets the
+    token usage, or why the call failed."""
     import anthropic
 
-    if (claude := client()) is None:
-        return None
     try:
+        claude = anthropic.AsyncAnthropic()
         response = await claude.messages.parse(
             model=settings.claude_model(),
             max_tokens=max_tokens,
@@ -160,29 +156,39 @@ async def parse[T: BaseModel](
             messages=[{"role": "user", "content": content}],
             output_format=schema,
         )
-    # Unresolvable credentials surface here, as a TypeError, not at construction.
-    except (anthropic.APIError, TypeError, ValueError) as exc:
-        log.warning("%s failed (%s)", what, exc)
+    # Credentials that cannot be resolved surface only once a request is made.
+    except (anthropic.AnthropicError, TypeError, ValueError) as exc:
+        _failed(what, exc, meta)
         return None
-    if response.stop_reason == "refusal":
+    if response.stop_reason == "refusal" or response.parsed_output is None:
+        _failed(what, ValueError(f"no answer ({response.stop_reason})"), meta)
         return None
+    if meta is not None:
+        meta["usage"] = {
+            "input_tokens": response.usage.input_tokens,
+            "output_tokens": response.usage.output_tokens,
+        }
     return response.parsed_output
 
 
 async def research(details: dict[str, str]) -> Research | None:
-    """Notes on the book from Wikipedia and Goodreads, with the pages they came from."""
+    """Notes on the book from Wikipedia and Goodreads, with the pages they came
+    from. Empty notes when nothing was found; None when the research failed."""
     import anthropic
 
-    if (claude := client()) is None:
-        return None
-    messages = [{"role": "user", "content": _title_data(details)}]
+    user = {"role": "user", "content": _title_data(details)}
     tools = [{
         "type": "web_search_20260209",
         "name": "web_search",
         "allowed_domains": RESEARCH_DOMAINS,
         "max_uses": MAX_SEARCHES,
     }]
+    # A long search pauses; sending back everything so far resumes it, and each
+    # continuation returns only its new blocks.
+    messages: list = [user]
+    blocks: list = []
     try:
+        claude = anthropic.AsyncAnthropic()
         for _ in range(MAX_CONTINUATIONS + 1):
             response = await claude.messages.create(
                 model=settings.claude_model(),
@@ -192,24 +198,24 @@ async def research(details: dict[str, str]) -> Research | None:
                 tools=tools,
                 messages=messages,
             )
-            # A long search can pause; resending the turn resumes it.
+            blocks += response.content
             if response.stop_reason != "pause_turn":
                 break
-            messages = [messages[0], {"role": "assistant", "content": response.content}]
-    # Unresolvable credentials surface here, as a TypeError, not at construction.
-    except (anthropic.APIError, TypeError) as exc:
-        log.warning("book research failed (%s)", exc)
+            messages = [user, {"role": "assistant", "content": blocks}]
+    except (anthropic.AnthropicError, TypeError) as exc:
+        _failed("book research", exc, None)
         return None
-    if response.stop_reason == "refusal":
+    if response.stop_reason in ("pause_turn", "refusal"):
+        _failed("book research", ValueError(f"no answer ({response.stop_reason})"), None)
         return None
 
-    notes = "\n".join(b.text for b in response.content if b.type == "text").strip()
+    notes = "\n".join(b.text for b in blocks if b.type == "text").strip()
     sources: list[str] = []
-    for block in response.content:
+    for block in blocks:
         # A failed search returns an error object here, not a list of results.
         if block.type == "web_search_tool_result" and isinstance(block.content, list):
             sources += [r.url for r in block.content if r.url not in sources]
-    return Research(notes=notes, sources=sources) if notes else None
+    return Research(notes=notes, sources=sources)
 
 
 async def write_core(
@@ -217,7 +223,8 @@ async def write_core(
 ) -> BookCore | None:
     """The Buchkern for one title, from its data and the research notes."""
     content = f"Titeldaten:\n{_title_data(details)}"
-    content += f"\n\nRecherche:\n{found.notes}" if found else "\n\nRecherche: keine Ergebnisse."
+    notes = found.notes if found else ""
+    content += f"\n\nRecherche:\n{notes}" if notes else "\n\nRecherche: keine Ergebnisse."
     return await parse(
         BookCore, system=_CORE_SYSTEM.format(publisher=publisher, imprint=imprint),
         content=content, what="book core",

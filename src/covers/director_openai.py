@@ -73,39 +73,3 @@ async def direct_openai(
     except (openai.OpenAIError, ValueError, TypeError) as exc:
         log.warning("openai art direction failed (%s), using fallback", exc)
         return degrade(meta, str(exc), text, title, author, style, mood)
-
-
-#: Prefix that carries the register into a locally-composed image prompt, used by
-#: the ``director="none"`` path where no text model runs at all.
-_DIRECT_PREAMBLE = {
-    "illustrated": (
-        "A warm figurative illustration in gouache and coloured pencil, visible "
-        "hand and texture, generous hand-mixed colour, for the cover of a German "
-        "literary novel. Depict the central place or object of this story:"
-    ),
-    "painterly": (
-        "An oil painting with real brushwork, atmospheric and tonal, for the cover "
-        "of a German literary novel. Depict the central place or scene of this "
-        "story:"
-    ),
-    "typographic": (
-        "An abstract composition of a few flat overlapping planes with matte "
-        "gouache texture, for the cover of a German literary novel, suggesting:"
-    ),
-}
-
-#: How much of the book text is handed to the image model on the direct path.
-DIRECT_TEXT_CHARS = 700
-
-
-def direct_prompt_from_text(text: str, style: str = DEFAULT_STYLE) -> str:
-    """Compose an image prompt locally, with no text-model call.
-
-    This is the genuinely single-call path: the book's own words are handed to the
-    image model behind a register preamble. It costs no extra latency, and it gives
-    up everything the brief decides -- palette, layout and German genre line all
-    come from the deterministic fallback instead.
-    """
-    preamble = _DIRECT_PREAMBLE.get(style, _DIRECT_PREAMBLE[DEFAULT_STYLE])
-    body = " ".join(text.split())[:DIRECT_TEXT_CHARS]
-    return f"{preamble} {body}"

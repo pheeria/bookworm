@@ -67,7 +67,7 @@ missing key never turns into a 500:
 
 | Missing | What happens |
 |---|---|
-| `ANTHROPIC_API_KEY` | A deterministic brief is derived from a hash of the input: palette, layout, typeface and genre line are chosen from the built-in catalogue. `art_direction_meta.source` reports `fallback`. |
+| `ANTHROPIC_API_KEY` | A deterministic brief is derived from a hash of the input: palette, layout, typeface and genre line are chosen from the built-in catalogue, and the image prompt is composed from the book's own text. `art_direction_meta.source` reports `fallback`. |
 | `FAL_API_KEY` / `OPENAI_API_KEY` | Whichever the chosen image model needs (see Models). Without it the cover renders with a procedural vector motif instead of painted artwork, and `notes` names the missing key. |
 
 Everything else — geometry, typesetting, rasterising — is local and deterministic.
@@ -118,19 +118,22 @@ three sources:
 
 | Decided by | What |
 |---|---|
-| The **reader type** (`covers/moods.py`) | Register, palette leaning, the layouts and type families the art director may choose from |
+| The **reader type** (`covers/moods.py`) | Register, palette leaning, the type families the art director may choose from |
 | The **publisher** (`bookworm/houses.py`) | Trim format per binding, imprint wordmark (e.g. rororo for Rowohlt paperbacks) |
 | The **book** | Title, author, the blurb as the brief, `category` as the Gattungsbezeichnung |
 
-| Type | Register | Layouts | Type families |
-|---|---|---|---|
-| `heart` | illustrated | illustrated_full, photo_duotone | humanist, literary_serif, garalde, neoclassical |
-| `suspense` | painterly | photo_duotone, rororo_band, illustrated_full | grotesk, grotesk_condensed, geometric, slab |
-| `trend` | illustrated | illustrated_full, kiwi_flat, type_block | meta, geometric, grotesk_condensed, neoclassical |
-| `discourse` | typographic | type_block, kiwi_flat, didone_centre | garalde, literary_serif, didone, grotesk, meta |
+Every type uses the `picture` layout: the picture fills the cover and the type is
+set straight onto it.
+
+| Type | Register | Type families |
+|---|---|---|
+| `heart` | illustrated | humanist, literary_serif, garalde, neoclassical, cormorant, lora, crimson, alegreya, young_serif, josefin |
+| `suspense` | painterly | grotesk, grotesk_condensed, geometric, slab, oswald, bebas, barlow_condensed, montserrat, work_sans, gloock |
+| `trend` | illustrated | meta, geometric, grotesk_condensed, neoclassical, fraunces, dm_serif, syne, space_grotesk, abril, josefin, cinzel |
+| `discourse` | typographic | garalde, literary_serif, didone, grotesk, meta, source_serif, newsreader, caslon, spectral, inter, cormorant, grenze_gotisch |
 
 The art director still chooses per book, inside those limits: the model is asked
-for a brief whose schema only admits the type's layouts and families, so it
+for a brief whose schema only admits the type's families, so it
 cannot stray, and the no-model fallback picks from the same lists. Who writes the brief, image
 quality and resolution are service settings (`COVERS_DIRECTOR`,
 `COVERS_IMAGE_QUALITY`), not per-cover choices. `/generate` takes the same `mood`
@@ -350,7 +353,7 @@ rather than a default baked into the prompt.
 | Template | Idiom |
 |---|---|
 | `illustrated_full` | The picture runs across the whole cover; the type sits in a panel over it. The layout for an illustrated cover. |
-| `picture` | The picture runs across the whole cover and the type is set straight onto it, in the calm top or bottom third, with nothing behind it. The layout every book cover uses. |
+| `picture` | The picture runs across the whole cover and the type is set straight onto it, where its `lettering` says, with nothing behind it. The layout every book cover uses. |
 | `photo_duotone` | Artwork across the upper two thirds, type below. |
 | `kiwi_flat` | Flat ground, left-aligned type stack in the upper half, artwork below. |
 | `rororo_band` | Full-bleed ground with a horizontal band carrying the title. |
@@ -366,7 +369,7 @@ Any part of the brief can be pinned: `template`, `type_family`, `palette`,
 typeface with it unless you pin that too. Pinning a `motif` implies you want it
 drawn.
 
-Sixteen palettes ship in the flat, slightly austere register the idiom lives in —
+Twenty-three palettes ship in the flat, slightly austere register the idiom lives in —
 `rororo_rot`, `kobalt`, `schwefel`, `pergament`, `graphit` and so on. The art
 direction model may also return its own hex values.
 
@@ -424,8 +427,8 @@ body names another. `artwork.provider` and `artwork.model` report which one ran.
 
 Set via env: `COVERS_CLAUDE_MODEL` (default `claude-opus-5`),
 `COVERS_OPENAI_TEXT_MODEL` (default `gpt-5.4`) and
-`COVERS_OPENAI_IMAGE_MODEL` (default `gpt-image-2`, for `image_model: openai`; the old name
-`COVERS_IMAGE_MODEL` still works; the installed SDK also accepts
+`COVERS_OPENAI_IMAGE_MODEL` (default `gpt-image-2`, for `image_model: openai`; the
+installed SDK also accepts
 `gpt-image-2.5-sunburst`, `gpt-image-2.5-flare`, `gpt-image-1.5`, `gpt-image-1`).
 Artwork is generated once, for the front panel, and cover-cropped to the planned
 placement. The response reports the artwork's `effective_dpi` over that placement
@@ -450,9 +453,9 @@ around them") and strictly for `typographic` ("restrict the palette to these").
 uv run pytest
 ```
 
-About 110 tests, ~3 seconds, no network and no credentials. `tests/conftest.py`
+The tests take a few seconds and need no network and no credentials. `tests/conftest.py`
 strips the provider keys and `MONGODB_*` from the environment for every test,
-because `bookworm.main` loads `.env` at import — without that the suite makes live,
+because `bookworm.main` loads `.env` when the app is first built — without that the suite makes live,
 billed image-generation calls. Books and covers run against in-memory `mongomock`. Tests that exercise a provider path stub the client and set
 their own key.
 

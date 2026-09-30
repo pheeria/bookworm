@@ -234,6 +234,11 @@ def test_unknown_book_is_a_404(client):
     assert client.get("/books/nope/covers").status_code == 404
 
 
+def test_a_null_text_means_the_blurb(client):
+    cover = client.post(f"/books/{SLUG}/covers", json={"type": "heart", "text": None})
+    assert cover.status_code == 201 and "text" not in cover.json()["options"]
+
+
 def test_bad_requests_are_422(client):
     base = f"/books/{SLUG}/covers"
     assert client.post(base, json={"type": "romance"}).status_code == 422
@@ -315,6 +320,26 @@ def test_upload_refuses_what_is_not_a_cover(client):
     assert upload(client, type="romance").status_code == 422
     assert client.post("/covers/upload", data={"title": "Alleinruhelage", "type": "heart"}).status_code == 422
     assert client.get(f"/books/{SLUG}/covers").json() == []  # nothing was stored
+
+
+def test_an_upload_is_stored_upright_and_opaque(client):
+    rotated = Image.new("RGB", (300, 450), "#1b3a8c")
+    exif = rotated.getexif()
+    exif[0x0112] = 6  # Orientation: turn 90° to show
+    out = io.BytesIO()
+    rotated.save(out, format="JPEG", exif=exif)
+    cover = upload(client, data=out.getvalue()).json()
+    with Image.open(io.BytesIO(client.get(cover["url"]).content)) as stored:
+        assert stored.size == (450, 300)
+
+    transparent = io.BytesIO()
+    Image.new("RGBA", (300, 450), (0, 0, 0, 0)).save(transparent, format="PNG")
+    assert upload(client, data=transparent.getvalue()).json()["color"] == "#ffffff"
+
+
+def test_a_damaged_image_is_a_422(client):
+    whole = _image(fmt="PNG")
+    assert upload(client, data=whole[: len(whole) // 2]).status_code == 422
 
 
 def test_covers_stored_before_uploads_read_as_generated(client):

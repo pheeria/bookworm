@@ -6,30 +6,25 @@ cairo-2 was found" even when cairo is installed. Extending
 ``DYLD_FALLBACK_LIBRARY_PATH`` in-process still works because the macOS ctypes
 resolver re-reads the variable on every lookup.
 
-Import this module before ``cairosvg`` anywhere it is needed; it re-exports
+Only macOS needs this. Import this module before ``cairosvg`` anywhere it is needed; it re-exports
 ``svg2png`` so callers can just use this module instead.
 """
 
 import os
 import sys
 
-_SEARCH_DIRS = (
-    "/opt/homebrew/lib",  # Homebrew, Apple silicon
-    "/usr/local/lib",  # Homebrew, Intel
-    "/usr/lib/x86_64-linux-gnu",  # Debian/Ubuntu
-    "/usr/lib/aarch64-linux-gnu",
-)
+#: Homebrew's library directories, Apple silicon and Intel.
+_HOMEBREW = ("/opt/homebrew/lib", "/usr/local/lib")
+#: What dyld searches when the variable is unset; setting it replaces these.
+_DYLD_DEFAULT = (os.path.expanduser("~/lib"), "/usr/local/lib", "/usr/lib")
 
 
 def _extend_library_path() -> None:
-    if sys.platform == "darwin":
-        var = "DYLD_FALLBACK_LIBRARY_PATH"
-    elif sys.platform.startswith("linux"):
-        var = "LD_LIBRARY_PATH"
-    else:
-        return
-    existing = [p for p in os.environ.get(var, "").split(os.pathsep) if p]
-    additions = [d for d in _SEARCH_DIRS if os.path.isdir(d) and d not in existing]
+    if sys.platform != "darwin":
+        return  # elsewhere the loader already searches the standard directories
+    var = "DYLD_FALLBACK_LIBRARY_PATH"
+    existing = [p for p in os.environ.get(var, "").split(os.pathsep) if p] or list(_DYLD_DEFAULT)
+    additions = [d for d in _HOMEBREW if os.path.isdir(d) and d not in existing]
     if additions:
         os.environ[var] = os.pathsep.join(additions + existing)
 
