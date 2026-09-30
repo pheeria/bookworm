@@ -1,6 +1,6 @@
 """Keep the test suite hermetic, fast and free.
 
-``covers.main`` calls ``load_dotenv()`` at import, so a ``.env`` in the project
+``bookworm.main`` calls ``load_dotenv()`` at import, so a ``.env`` in the project
 root puts real credentials into the environment. Without this fixture the suite
 would make live Claude and image-generation calls: slow, non-deterministic, and
 billed to whoever runs it.

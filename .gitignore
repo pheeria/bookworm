@@ -221,3 +221,6 @@ __marimo__/
 
 # Rendered covers
 out/
+
+# books database
+data/

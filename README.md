@@ -34,7 +34,7 @@ API. They were `BOOKWORM_*`; rename them in your `.env` if you set any. Provider
 brew install cairo          # Debian: apt-get install libcairo2
 uv sync --extra dev
 cp .env.example .env        # add your keys; it runs without them, see below
-uv run uvicorn covers.main:app --reload
+uv run uvicorn bookworm.main:app --reload   # books + covers
 ```
 
 ```bash
@@ -78,6 +78,24 @@ direction chose austerity. Check `art_direction_meta.source` and `notes`, or cal
 
 `load_dotenv()` resolves `.env` relative to the package, so it is found when the
 service runs from the project. A script living elsewhere has to pass the path.
+
+## Books
+
+`books` is the catalogue package: CRUD over a SQLite database, served next to the
+cover endpoints by `bookworm.main:app`. (`covers.main:app` still runs covers alone.)
+
+| Method | Path | |
+|---|---|---|
+| `GET` | `/books` | Filter with `publisher`, `category` and `format`, and search title, author and subtitle with `q`. Paginate with `limit` (default 50, max 200) and `offset`. Returns `{items, total, limit, offset}`. |
+| `GET` | `/books/{slug}` | One book, or 404 |
+| `POST` | `/books` | 201; 409 if the slug or ISBN is taken |
+| `PUT` | `/books/{slug}` | Full replace, generated covers included; the slug may change |
+| `DELETE` | `/books/{slug}` | 204 |
+
+The database lives at `BOOKS_DB_PATH` (default `data/books.db`). On first start it is
+created and seeded from `src/books/seed.json`, which is an export of
+`../recover/books.ts` (`node scripts/export_books_ts.mjs`). After that the database
+is the source of truth, and re-exporting does not change a database that already has books.
 
 ## Formats
 

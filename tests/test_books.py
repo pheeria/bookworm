@@ -1,0 +1,122 @@
+"""The books CRUD API, against a throwaway SQLite database per test."""
+
+import copy
+import json
+
+import pytest
+from fastapi.testclient import TestClient
+
+from books.db import SEED
+from bookworm.main import app
+
+SEEDED = json.loads(SEED.read_text(encoding="utf-8"))
+
+
+@pytest.fixture
+def client(tmp_path, monkeypatch) -> TestClient:
+    monkeypatch.setenv("BOOKS_DB_PATH", str(tmp_path / "books.db"))
+    with TestClient(app) as c:  # the lifespan creates and seeds the database
+        yield c
+
+
+def new_book(**overrides) -> dict:
+    book = copy.deepcopy(SEEDED[0])
+    book.update(slug="helena-marr-die-zweite-sprache-9783462001234",
+                isbn="9783462001234", title="Die zweite Sprache", author="Helena Marr")
+    book.update(overrides)
+    return book
+
+
+def test_seeded_from_books_ts(client):
+    body = client.get("/books", params={"limit": 200}).json()
+    assert body["total"] == len(SEEDED) == 25
+    assert [b["slug"] for b in body["items"]] == [b["slug"] for b in SEEDED]
+
+
+def test_seeding_is_idempotent(client, tmp_path):
+    from books import db
+
+    db.init(tmp_path / "books.db")
+    assert client.get("/books").json()["total"] == 25
+
+
+def test_filters_and_search(client):
+    def total(**params):
+        return client.get("/books", params=params).json()["total"]
+
+    assert total(publisher="Rowohlt") == 5
+    assert total(category="Krimi") == 2
+    assert total(format="Taschenbuch", publisher="Kiepenheuer & Witsch") == 3
+    assert total(q="FITZEK") == 1
+    assert total(q="čapek") == 1  # case folding beyond ASCII
+    assert total(publisher="Nobody") == 0
+
+
+def test_pagination(client):
+    page = client.get("/books", params={"limit": 10, "offset": 20}).json()
+    assert (page["total"], len(page["items"]), page["offset"]) == (25, 5, 20)
+    assert client.get("/books", params={"limit": 0}).status_code == 422
+
+
+def test_get_one(client):
+    slug = SEEDED[1]["slug"]
+    book = client.get(f"/books/{slug}").json()
+    assert book == SEEDED[1]
+    assert client.get("/books/no-such-book").status_code == 404
+
+
+def test_crud_round_trip(client):
+    book = new_book()
+    slug = book["slug"]
+
+    created = client.post("/books", json=book)
+    assert created.status_code == 201
+    assert created.json() == book
+    assert client.post("/books", json=book).status_code == 409
+    assert client.post("/books", json=new_book(slug="other-slug")).status_code == 409  # isbn
+    assert client.get("/books").json()["total"] == 26
+
+    cover = {"id": "abc123", "type": "suspense", "url": "/covers/abc123/front.jpg",
+             "color": "#101010", "theme": book["original_cover"]["theme"]}
+    replaced = client.put(f"/books/{slug}",
+                          json={**book, "title": "Die dritte Sprache", "generated_covers": [cover]})
+    assert replaced.status_code == 200
+    fetched = client.get(f"/books/{slug}").json()
+    assert fetched["title"] == "Die dritte Sprache"
+    assert fetched["generated_covers"] == [cover]
+
+    assert client.delete(f"/books/{slug}").status_code == 204
+    assert client.get(f"/books/{slug}").status_code == 404
+    assert client.delete(f"/books/{slug}").status_code == 404
+
+
+def test_put_can_rename_but_not_onto_another_book(client):
+    book = copy.deepcopy(SEEDED[0])
+    old = book["slug"]
+
+    clash = client.put(f"/books/{old}", json={**book, "slug": SEEDED[1]["slug"]})
+    assert clash.status_code == 409
+    clash = client.put(f"/books/{old}", json={**book, "isbn": SEEDED[1]["isbn"]})
+    assert clash.status_code == 409
+
+    assert client.put(f"/books/{old}", json={**book, "slug": "renamed"}).status_code == 200
+    assert client.get(f"/books/{old}").status_code == 404
+    assert client.get("/books/renamed").json()["isbn"] == book["isbn"]
+    assert client.put("/books/missing", json=new_book()).status_code == 404
+
+
+@pytest.mark.parametrize("bad", [
+    {"isbn": "978-3-462-00123-4"},
+    {"slug": "Not A Slug"},
+    {"pages": 0},
+    {"original_cover": {**SEEDED[0]["original_cover"], "color": "red"}},
+    {"generated_covers": [{"id": "x", "type": "romance", "url": "u",
+                           "color": "#000000", "theme": SEEDED[0]["original_cover"]["theme"]}]},
+])
+def test_validation(client, bad):
+    assert client.post("/books", json=new_book(**bad)).status_code == 422
+
+
+def test_covers_endpoints_still_mounted(client):
+    assert client.get("/healthz").json()["status"] == "ok"
+    assert client.get("/catalogue").status_code == 200
