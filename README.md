@@ -16,13 +16,25 @@ lettering is malformed, unlicensed and unprintable — so they never see the tit
 The image model paints artwork; the title, author, Gattungsbezeichnung, spine and
 back-cover copy are set afterwards as outlined vector type at the exact trim size.
 
+## Layout
+
+`bookworm` is the project. **`covers` is the package** that generates covers — named
+after its endpoint, because it is on its way to being one component of a larger
+book-metadata API rather than a service of its own. Everything cover-related is
+`src/covers/`; nothing in it may configure the process (no `.env` loading, no root
+logger, no middleware) — that belongs to whatever application composes it.
+
+Settings are prefixed **`COVERS_*`** so they can share one `.env` with the rest of that
+API. They were `BOOKWORM_*`; rename them in your `.env` if you set any. Provider keys
+(`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`) keep their conventional names.
+
 ## Quick start
 
 ```bash
 brew install cairo          # Debian: apt-get install libcairo2
 uv sync --extra dev
 cp .env.example .env        # add your keys; it runs without them, see below
-uv run uvicorn bookworm.main:app --reload
+uv run uvicorn covers.main:app --reload
 ```
 
 ```bash
@@ -134,7 +146,7 @@ dependency.
 
 Faces are the macOS system fonts, grouped into logical families
 (`geometric` is Futura, `neoclassical` is Didot, `grotesk` is Helvetica Neue, and
-so on) with a fallback chain. Drop TTF/OTF files into `src/bookworm/fonts/` to
+so on) with a fallback chain. Drop TTF/OTF files into `src/covers/fonts/` to
 override. **Check the licence before printing commercially** — the bundled macOS
 faces are licensed for use on the machine, not for redistribution.
 
@@ -209,8 +221,8 @@ before committing: it is the one setting here that trades output quality for tim
 
 | `director` | Behaviour |
 |---|---|
-| `claude` *(default)* | `claude-opus-5`. Set `BOOKWORM_CLAUDE_MODEL` to change. |
-| `openai` | `gpt-5.4` via `responses.parse`. Set `BOOKWORM_OPENAI_TEXT_MODEL`. One provider, one key, one bill. |
+| `claude` *(default)* | `claude-opus-5`. Set `COVERS_CLAUDE_MODEL` to change. |
+| `openai` | `gpt-5.4` via `responses.parse`. Set `COVERS_OPENAI_TEXT_MODEL`. One provider, one key, one bill. |
 | `none` | No text model at all. The image prompt is composed locally from your text behind a register preamble; palette, layout, genre line and back-cover copy come from the deterministic brief. |
 
 `director="none"` gives up real things: the palette is picked by hash rather than
@@ -220,9 +232,9 @@ not for a cover going to press.
 
 ## Models
 
-Set via env: `BOOKWORM_CLAUDE_MODEL` (default `claude-opus-5`),
-`BOOKWORM_OPENAI_TEXT_MODEL` (default `gpt-5.4`) and
-`BOOKWORM_IMAGE_MODEL` (default `gpt-image-2`; the installed SDK also accepts
+Set via env: `COVERS_CLAUDE_MODEL` (default `claude-opus-5`),
+`COVERS_OPENAI_TEXT_MODEL` (default `gpt-5.4`) and
+`COVERS_IMAGE_MODEL` (default `gpt-image-2`; the installed SDK also accepts
 `gpt-image-2.5-sunburst`, `gpt-image-2.5-flare`, `gpt-image-1.5`, `gpt-image-1`).
 Artwork is generated once, for the front panel, and cover-cropped to the planned
 placement. The response reports the artwork's `effective_dpi` over that placement
@@ -249,7 +261,7 @@ uv run pytest
 
 48 tests, ~2 seconds, no network and no credentials. `tests/conftest.py` strips
 `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` from the environment for every test, because
-`bookworm.main` loads `.env` at import — without that the suite makes live, billed
+`covers.main` loads `.env` at import — without that the suite makes live, billed
 image-generation calls. Tests that exercise a provider path stub the client and set
 their own key.
 

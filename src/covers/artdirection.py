@@ -2,7 +2,7 @@
 
 This is the judgement step -- palette, layout, typographic register, the German
 genre line, the back-cover copy, and the prompt the image model will render. It
-runs on Claude. Image generation itself lives in :mod:`bookworm.imagegen` and runs
+runs on Claude. Image generation itself lives in :mod:`covers.imagegen` and runs
 on OpenAI.
 
 If no Anthropic credentials are reachable, or the call fails, a deterministic
@@ -13,17 +13,19 @@ import hashlib
 import logging
 import os
 import re
-from typing import Literal, get_args
+from typing import TYPE_CHECKING, Literal, get_args
 
-import anthropic
 from pydantic import BaseModel, Field
+
+if TYPE_CHECKING:  # the SDK is imported lazily inside direct(); see below
+    import anthropic
 
 from .palettes import PALETTES_BY_KEY, Palette, choose_palette
 from .typography import FAMILIES
 
-log = logging.getLogger("bookworm.artdirection")
+log = logging.getLogger("covers.artdirection")
 
-MODEL = os.environ.get("BOOKWORM_CLAUDE_MODEL", "claude-opus-5")
+MODEL = os.environ.get("COVERS_CLAUDE_MODEL", "claude-opus-5")
 
 Template = Literal[
     "rororo_band",
@@ -82,7 +84,13 @@ MAX_PROMPT_CHARS = 24_000
 
 
 class ArtDirection(BaseModel):
-    """The cover brief. Every field is consumed by the renderer."""
+    """The cover brief.
+
+    Mostly design decisions the renderer consumes. Two fields -- ``genre_line`` and
+    ``blurb`` -- are book copy rather than design: the book record owns them, and a
+    caller may pin them. ``keywords`` is emitted but read by nothing; it earns its
+    place by making the model characterise the book before it picks a layout.
+    """
 
     mood: str = Field(description="The cover's register in three to six German words.")
     keywords: list[str] = Field(
@@ -365,12 +373,16 @@ async def direct(
     author: str,
     *,
     style: str = DEFAULT_STYLE,
-    client: anthropic.AsyncAnthropic | None = None,
+    client: "anthropic.AsyncAnthropic | None" = None,
 ) -> tuple[ArtDirection, dict]:
     """Produce a cover brief. Returns the brief and metadata about how it was made."""
     meta: dict = {"source": "claude", "model": MODEL, "style": style}
     prompt_text, clipped = clip_prompt(text)
     meta["input_clipped"] = clipped
+
+    # Imported here, not at module scope: ArtDirection is the renderer's type
+    # vocabulary, and `covers.layout` must not pull the Anthropic SDK to use it.
+    import anthropic
 
     try:
         ac = client or anthropic.AsyncAnthropic()
@@ -415,8 +427,13 @@ def apply_overrides(
     artwork: str | None = None,
     motif: str | None = None,
     genre_line: str | None = None,
+    blurb: str | None = None,
 ) -> ArtDirection:
-    """Let the caller pin any part of the brief."""
+    """Let the caller pin any part of the brief.
+
+    Copy the caller pins lands on the brief, not just on the rendered content, so
+    the brief stays the single source of truth for what the cover says.
+    """
     data = direction.model_dump()
     if template:
         data["template"] = template
@@ -434,6 +451,8 @@ def apply_overrides(
         data["motif"] = motif
     if genre_line:
         data["genre_line"] = genre_line
+    if blurb:
+        data["blurb"] = blurb
     if palette_key:
         try:
             p = PALETTES_BY_KEY[palette_key]

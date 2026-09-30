@@ -1,7 +1,7 @@
 """Cover artwork via OpenAI's image models.
 
 The image model paints the artwork only. All lettering is set afterwards as vector
-type by :mod:`bookworm.layout`, because generated type is never printable -- so the
+type by :mod:`covers.layout`, because generated type is never printable -- so the
 prompt is hardened against lettering before it is sent.
 
 Artwork is generated for the front panel, cover-cropped to the panel's bleed box,
@@ -22,10 +22,10 @@ from .artdirection import DEFAULT_STYLE
 from .formats import MM_PER_INCH
 from .palettes import rgb
 
-log = logging.getLogger("bookworm.imagegen")
+log = logging.getLogger("covers.imagegen")
 
-MODEL = os.environ.get("BOOKWORM_IMAGE_MODEL", "gpt-image-2")
-QUALITY = os.environ.get("BOOKWORM_IMAGE_QUALITY", "high")
+MODEL = os.environ.get("COVERS_IMAGE_MODEL", "gpt-image-2")
+QUALITY = os.environ.get("COVERS_IMAGE_QUALITY", "high")
 
 Quality = Literal["low", "medium", "high", "auto"]
 

@@ -1,7 +1,7 @@
 """Cover composition: five layout templates, a spine, a back cover and flaps.
 
 Everything is drawn in millimetre coordinates so the SVG viewBox is the physical
-sheet. Panels are positioned by :mod:`bookworm.formats`; this module only decides
+sheet. Panels are positioned by :mod:`covers.formats`; this module only decides
 where type and imagery sit inside them.
 
 Type is placed off the cap line rather than the baseline, because that is what the

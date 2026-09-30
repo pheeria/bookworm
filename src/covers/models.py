@@ -8,7 +8,7 @@ from .artdirection import MOTIFS, STYLES, TEMPLATES, Artwork
 from .formats import DEFAULT_FORMAT, FORMATS
 from .imagegen import Quality, Treatment
 from .palettes import PALETTE_KEYS
-from .render import ASSETS
+from .assets import ASSET_NAMES
 from .typography import TYPE_FAMILIES
 
 
@@ -77,7 +77,7 @@ class CoverRequest(BaseModel):
         description=(
             "Image-model quality. This is the real latency and cost lever: 'high' "
             "(the default) is most of the request's wall clock. Defaults to "
-            "BOOKWORM_IMAGE_QUALITY, else 'high'."
+            "COVERS_IMAGE_QUALITY, else 'high'."
         ),
     )
     treatment: Treatment = Field(
@@ -95,9 +95,33 @@ class CoverRequest(BaseModel):
         default=False, description="Draw trim and fold lines for proofing."
     )
     spine_direction: Literal["top_to_bottom", "bottom_to_top"] = "top_to_bottom"
-    assets: list[Literal[ASSETS]] | None = Field(  # type: ignore[valid-type]
-        default=None, description=f"Defaults to a useful subset of: {', '.join(ASSETS)}."
+    assets: list[Literal[ASSET_NAMES]] | None = Field(  # type: ignore[valid-type]
+        default=None, description=f"Defaults to a useful subset of: {', '.join(ASSET_NAMES)}."
     )
+
+
+CopySource = Literal["caller", "model", "fallback"]
+
+
+class CopySuggestion(BaseModel):
+    """A piece of book copy the cover printed, and where it came from."""
+
+    value: str
+    source: CopySource = Field(
+        description=(
+            "caller: you pinned it, the cover just used it. model: an art-direction "
+            "model wrote it. fallback: the deterministic brief made it up because no "
+            "model was reachable -- a fallback blurb is the first sentences of your "
+            "own input text, so a book record should rarely adopt it."
+        )
+    )
+
+
+class CopySuggestions(BaseModel):
+    """Book copy the cover used. The book record decides whether to adopt it."""
+
+    genre_line: CopySuggestion
+    blurb: CopySuggestion
 
 
 class CoverResponse(BaseModel):
@@ -108,6 +132,11 @@ class CoverResponse(BaseModel):
     artwork: dict[str, Any] | None
     geometry: dict[str, Any]
     content: dict[str, Any]
+    suggestions: CopySuggestions = Field(
+        description="Book copy this cover printed, tagged with who wrote it."
+    )
+    style: str
+    director: str
     seed: int
     notes: list[str] = Field(
         description="Anything the renderer had to work around, in plain language."

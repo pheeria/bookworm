@@ -24,9 +24,10 @@ from .director_openai import direct_openai, direct_prompt_from_text
 from .formats import geometry, px, resolve_format
 from .layout import Content, Ctx, artwork_plan
 from .palettes import darkest_and_lightest
-from .render import DEFAULT_ASSETS, render
+from .assets import DEFAULT_ASSETS
+from .render import render
 
-log = logging.getLogger("bookworm.pipeline")
+log = logging.getLogger("covers.pipeline")
 
 async def create_cover(
     *,
@@ -80,6 +81,7 @@ async def create_cover(
         artwork=artwork,
         motif=motif,
         genre_line=genre_line,
+        blurb=blurb,
     )
     # Asking for a motif implies you want it drawn, even if the brief said the
     # cover should be purely typographic.
@@ -132,11 +134,25 @@ async def create_cover(
                     f"placement and was resampled up to {dpi} dpi; type stays vector"
                 )
 
+    # The brief is the single source of truth for copy; record who wrote each
+    # piece so the book record can decide whether to adopt it.
+    written_by = "fallback" if ad_meta.get("source") in ("fallback", "none") else "model"
+    suggestions = {
+        "genre_line": {
+            "value": direction.genre_line,
+            "source": "caller" if genre_line else written_by,
+        },
+        "blurb": {
+            "value": direction.blurb,
+            "source": "caller" if blurb else written_by,
+        },
+    }
+
     content = Content(
         title=title,
         author=author,
         genre_line=direction.genre_line,
-        blurb=blurb if blurb is not None else direction.blurb,
+        blurb=direction.blurb,
         imprint=imprint if imprint is not None else (
             fmt.imprint if fmt.imprint != "allgemein" else ""
         ),
@@ -165,6 +181,7 @@ async def create_cover(
         "artwork": art_meta,
         "geometry": geo.to_dict(),
         "content": content.summary(),
+        "suggestions": suggestions,
         "style": style,
         "director": director,
         "seed": seed,

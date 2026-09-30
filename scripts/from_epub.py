@@ -87,7 +87,7 @@ def read_epub(path: Path, excerpt_chars: int = 3000) -> dict:
 
 async def run_local(book: dict, outdir: Path, **overrides) -> dict:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-    from bookworm.pipeline import create_cover
+    from covers.pipeline import create_cover
 
     return await create_cover(
         text=book["text"],

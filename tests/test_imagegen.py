@@ -11,11 +11,11 @@ import io
 import pytest
 from PIL import Image
 
-from bookworm import imagegen
-from bookworm.formats import FORMATS, geometry
-from bookworm.imagegen import build_prompt
-from bookworm.layout import artwork_plan
-from bookworm.pipeline import create_cover
+from covers import imagegen
+from covers.formats import FORMATS, geometry
+from covers.imagegen import build_prompt
+from covers.layout import artwork_plan
+from covers.pipeline import create_cover
 
 
 class _StubImage:
@@ -153,7 +153,7 @@ async def test_api_failure_degrades_instead_of_raising(monkeypatch):
 
 
 async def test_artwork_is_embedded_in_the_cover_and_reported(tmp_path, stub_openai):
-    from bookworm.artdirection import ArtDirection
+    from covers.artdirection import ArtDirection
 
     result = await create_cover(
         text="Ein Märchen aus dem Wald.",
@@ -211,8 +211,8 @@ async def test_upscaling_is_disclosed_in_the_notes(tmp_path, stub_openai):
 
 async def test_openai_director_produces_the_same_brief_shape(monkeypatch):
     """Either director yields an ArtDirection the renderer cannot distinguish."""
-    from bookworm.artdirection import ArtDirection, fallback_direction
-    from bookworm.director_openai import direct_openai
+    from covers.artdirection import ArtDirection, fallback_direction
+    from covers.director_openai import direct_openai
 
     captured: dict = {}
     reference = fallback_direction("Ein Haus am Hafen.", "Das Haus", "J. W.", "illustrated")
@@ -244,7 +244,7 @@ async def test_openai_director_produces_the_same_brief_shape(monkeypatch):
 
 
 async def test_openai_director_degrades_without_a_key(monkeypatch):
-    from bookworm.director_openai import direct_openai
+    from covers.director_openai import direct_openai
 
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     direction, meta = await direct_openai("x", "y", "z")
@@ -255,7 +255,7 @@ async def test_openai_director_degrades_without_a_key(monkeypatch):
 @pytest.mark.parametrize("style", ["illustrated", "painterly", "typographic"])
 def test_direct_path_builds_a_prompt_from_the_book_text(style):
     """director='none' runs no text model, so the prompt is composed locally."""
-    from bookworm.director_openai import (
+    from covers.director_openai import (
         _DIRECT_PREAMBLE,
         DIRECT_TEXT_CHARS,
         direct_prompt_from_text,

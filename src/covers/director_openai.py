@@ -1,6 +1,6 @@
 """Art direction on OpenAI, as an alternative to the Claude director.
 
-Produces the same :class:`~bookworm.artdirection.ArtDirection` brief from the same
+Produces the same :class:`~covers.artdirection.ArtDirection` brief from the same
 style guidance, so the renderer cannot tell which director wrote it. Selected with
 ``director="openai"``.
 
@@ -23,9 +23,9 @@ from .artdirection import (
     user_prompt,
 )
 
-log = logging.getLogger("bookworm.director_openai")
+log = logging.getLogger("covers.director_openai")
 
-MODEL = os.environ.get("BOOKWORM_OPENAI_TEXT_MODEL", "gpt-5.4")
+MODEL = os.environ.get("COVERS_OPENAI_TEXT_MODEL", "gpt-5.4")
 
 
 async def direct_openai(

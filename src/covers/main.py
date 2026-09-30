@@ -26,25 +26,15 @@ from .models import (
 )
 from .palettes import PALETTES
 from .pipeline import create_cover
-from .render import ASSETS, DEFAULT_ASSETS
+from .assets import ASSET_NAMES, DEFAULT_ASSETS, MEDIA_BY_SUFFIX
 from .typography import TYPE_FAMILIES
 
-logging.basicConfig(level=os.environ.get("BOOKWORM_LOG_LEVEL", "INFO"))
-log = logging.getLogger("bookworm")
+logging.basicConfig(level=os.environ.get("COVERS_LOG_LEVEL", "INFO"))
 
-OUTPUT_DIR = Path(os.environ.get("BOOKWORM_OUTPUT_DIR", "out")).resolve()
-
-_MEDIA = {
-    ".png": "image/png",
-    ".jpg": "image/jpeg",
-    ".svg": "image/svg+xml",
-    ".pdf": "application/pdf",
-    ".json": "application/json",
-}
-
+OUTPUT_DIR = Path(os.environ.get("COVERS_OUTPUT_DIR", "out")).resolve()
 
 def _file(path: Path) -> FileResponse:
-    media = _MEDIA.get(path.suffix, "application/octet-stream")
+    media = MEDIA_BY_SUFFIX.get(path.suffix, "application/octet-stream")
     return FileResponse(path, media_type=media)
 
 app = FastAPI(
@@ -65,8 +55,8 @@ app = FastAPI(
 #: opening the service to the web at large. That matters more here than for a
 #: read-only API: `POST /generate` spends real money on image generation, so a
 #: wildcard would let any page you happen to visit bill your OpenAI account.
-#: Set BOOKWORM_CORS_ORIGINS to a comma-separated list, or "*" to allow all.
-_CORS_ORIGINS = os.environ.get("BOOKWORM_CORS_ORIGINS", "").strip()
+#: Set COVERS_CORS_ORIGINS to a comma-separated list, or "*" to allow all.
+_CORS_ORIGINS = os.environ.get("COVERS_CORS_ORIGINS", "").strip()
 _LOCALHOST = r"http://(localhost|127\.0\.0\.1)(:\d+)?"
 
 if _CORS_ORIGINS == "*":
@@ -115,7 +105,7 @@ def catalogue() -> CatalogueResponse:
         type_families=list(TYPE_FAMILIES),
         palettes=[asdict(p) for p in PALETTES],
         motifs=list(MOTIFS),
-        assets=list(ASSETS),
+        assets=list(ASSET_NAMES),
     )
 
 
@@ -131,8 +121,8 @@ async def generate(
 ) -> Response | CoverResponse:
     assets = tuple(request.assets) if request.assets else DEFAULT_ASSETS
     if inline is not None:
-        if inline not in ASSETS:
-            raise HTTPException(422, f"inline must be one of: {', '.join(ASSETS)}")
+        if inline not in ASSET_NAMES:
+            raise HTTPException(422, f"inline must be one of: {', '.join(ASSET_NAMES)}")
         if inline not in assets:
             assets += (inline,)
 
@@ -165,6 +155,9 @@ async def generate(
         artwork=result["artwork"],
         geometry=result["geometry"],
         content=result["content"],
+        suggestions=result["suggestions"],
+        style=result["style"],
+        director=result["director"],
         seed=result["seed"],
         notes=result["notes"],
     )

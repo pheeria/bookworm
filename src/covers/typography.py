@@ -217,7 +217,7 @@ def face(family: str, weight: str = "display") -> Face:
                     continue
     raise MissingFontError(
         "no usable typeface found; install the macOS supplemental fonts or drop "
-        "TTF/OTF files into src/bookworm/fonts/"
+        "TTF/OTF files into src/covers/fonts/"
     )
 
 

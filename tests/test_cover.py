@@ -9,14 +9,15 @@ import re
 import pytest
 from fastapi.testclient import TestClient
 
-from bookworm.artdirection import (
+from covers.artdirection import (
     TEMPLATES,
     _genre_from_text,
+    apply_overrides,
     fallback_direction,
     system_prompt,
 )
-from bookworm.formats import FORMATS, geometry, resolve_format, spine_mm
-from bookworm.layout import (
+from covers.formats import FORMATS, geometry, resolve_format, spine_mm
+from covers.layout import (
     Content,
     Ctx,
     _teaser,
@@ -24,8 +25,8 @@ from bookworm.layout import (
     build_front,
     build_spread,
 )
-from bookworm.main import app
-from bookworm.typography import face, fit_display, umlaut_leading
+from covers.main import app
+from covers.typography import face, fit_display, umlaut_leading
 
 client = TestClient(app)
 
@@ -289,7 +290,7 @@ def test_catalogue_lists_the_german_formats():
 
 
 def test_generate_returns_assets_and_geometry(tmp_path, monkeypatch):
-    monkeypatch.setattr("bookworm.main.OUTPUT_DIR", tmp_path)
+    monkeypatch.setattr("covers.main.OUTPUT_DIR", tmp_path)
     response = client.post(
         "/generate",
         json={
@@ -322,7 +323,7 @@ def test_generate_returns_assets_and_geometry(tmp_path, monkeypatch):
 
 
 def test_generate_can_return_an_image_inline(tmp_path, monkeypatch):
-    monkeypatch.setattr("bookworm.main.OUTPUT_DIR", tmp_path)
+    monkeypatch.setattr("covers.main.OUTPUT_DIR", tmp_path)
     response = client.post(
         "/generate?inline=front_png",
         json={"text": "Kurz.", "title": "Kurz", "author": "K. Autor"},
@@ -333,7 +334,7 @@ def test_generate_can_return_an_image_inline(tmp_path, monkeypatch):
 
 
 def test_unknown_format_is_a_422(tmp_path, monkeypatch):
-    monkeypatch.setattr("bookworm.main.OUTPUT_DIR", tmp_path)
+    monkeypatch.setattr("covers.main.OUTPUT_DIR", tmp_path)
     response = client.post(
         "/generate",
         json={"text": "x", "title": "x", "author": "x", "format": "nope"},
@@ -342,7 +343,7 @@ def test_unknown_format_is_a_422(tmp_path, monkeypatch):
 
 
 def test_asset_route_refuses_traversal(tmp_path, monkeypatch):
-    monkeypatch.setattr("bookworm.main.OUTPUT_DIR", tmp_path)
+    monkeypatch.setattr("covers.main.OUTPUT_DIR", tmp_path)
     assert client.get("/covers/abc123/../../etc/passwd").status_code == 404
     assert client.get("/covers/..%2F..%2Fetc/passwd").status_code == 404
 
@@ -459,3 +460,57 @@ def test_other_origins_are_refused(origin):
     """
     response = _preflight(origin)
     assert response.headers.get("access-control-allow-origin") is None
+
+
+# --- Copy ownership ---
+
+
+def test_caller_pinned_copy_lands_on_the_brief_not_just_the_content():
+    """One fact, one value.
+
+    The blurb override used to be applied to Content only, so the response
+    carried the model's blurb in art_direction and the caller's in content.
+    """
+    d = fallback_direction("Ein Buch.", "T", "A")
+    pinned = apply_overrides(d, genre_line="Essays", blurb="Vom Aufrufer gesetzt.")
+    assert pinned.genre_line == "Essays"
+    assert pinned.blurb == "Vom Aufrufer gesetzt."
+    # An absent override leaves the brief alone.
+    untouched = apply_overrides(d)
+    assert untouched.blurb == d.blurb
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "expected"),
+    [
+        ({}, "fallback"),
+        ({"genre_line": "Essays", "blurb": "Gesetzt."}, "caller"),
+    ],
+)
+async def test_suggestions_report_who_wrote_the_copy(tmp_path, kwargs, expected):
+    from covers.pipeline import create_cover
+
+    result = await create_cover(
+        text="Zwei Schwestern erben ein Haus.", title="Das Haus", author="J. W.",
+        outdir=tmp_path, director="none", artwork="none",
+        assets=("front_svg",), **kwargs,
+    )
+    s = result["suggestions"]
+    assert s["genre_line"]["source"] == expected
+    assert s["blurb"]["source"] == expected
+    # Whatever the source, the reported value is what the cover actually printed.
+    assert s["genre_line"]["value"] == result["content"]["genre_line"]
+    assert s["blurb"]["value"] == result["content"]["blurb"]
+
+
+def test_response_carries_style_and_director(tmp_path, monkeypatch):
+    monkeypatch.setattr("covers.main.OUTPUT_DIR", tmp_path)
+    body = client.post(
+        "/generate",
+        json={"text": "Ein Haus am Hafen.", "title": "Das Haus", "author": "J. W.",
+              "director": "none", "artwork": "none", "style": "typographic",
+              "assets": ["front_svg"]},
+    ).json()
+    assert body["style"] == "typographic"
+    assert body["director"] == "none"
+    assert body["suggestions"]["blurb"]["source"] == "fallback"
