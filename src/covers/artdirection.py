@@ -1,7 +1,7 @@
 """Art direction: turn a text prompt into a concrete cover brief.
 
 This is the judgement step -- palette, layout, typographic register, the German
-genre line, the back-cover copy, and the prompt the image model will render. It
+genre line, and the prompt the image model will render. It
 runs on Claude. Image generation itself lives in :mod:`covers.imagegen` and runs
 on OpenAI.
 
@@ -86,9 +86,8 @@ MAX_PROMPT_CHARS = 24_000
 class ArtDirection(BaseModel):
     """The cover brief.
 
-    Mostly design decisions the renderer consumes. Two fields -- ``genre_line`` and
-    ``blurb`` -- are book copy rather than design: the book record owns them, and a
-    caller may pin them. ``keywords`` is emitted but read by nothing; it earns its
+    Mostly design decisions the renderer consumes. ``genre_line`` is book copy
+    rather than design: the book record owns it, and a caller may pin it. ``keywords`` is emitted but read by nothing; it earns its
     place by making the model characterise the book before it picks a layout.
     """
 
@@ -129,7 +128,7 @@ class ArtDirection(BaseModel):
     ground: str = Field(pattern=HEX, description="Background colour, hex.")
     ink: str = Field(pattern=HEX, description="Primary type colour, must read on the ground.")
     accent: str = Field(pattern=HEX, description="Accent for bands, rules and the genre line.")
-    secondary: str = Field(pattern=HEX, description="Supporting colour for motifs and the spine.")
+    secondary: str = Field(pattern=HEX, description="Supporting colour for motifs.")
     title_case: Literal["upper", "title", "as_is"] = Field(
         description="How to case the title. Uppercase suits geometric and grotesk display."
     )
@@ -137,12 +136,6 @@ class ArtDirection(BaseModel):
         description=(
             "German Gattungsbezeichnung printed under the title, e.g. 'Roman', "
             "'Erzählungen', 'Essays', 'Gedichte', 'Novelle'. Keep it to one or two words."
-        )
-    )
-    blurb: str = Field(
-        description=(
-            "German back-cover copy: two to four sentences, present tense, no spoilers, "
-            "no quotation marks, no exclamation marks."
         )
     )
     image_prompt: str = Field(
@@ -183,8 +176,7 @@ can read at thumbnail size has failed.
 - You never put lettering in the image prompt. The type is set separately, in \
 vector, on top of whatever the image model returns; an image with letters in it is \
 unusable. Describe the picture, not the cover.
-- Write the blurb and the genre line in German even when the input is in another \
-language.
+- Write the genre line in German even when the input is in another language.
 """
 
 #: The register the cover is briefed in. This is the caller's choice, not yours --
@@ -340,10 +332,6 @@ def fallback_direction(
     family = TEMPLATE_DEFAULT_FAMILY[template]
     motif = DRAWN_MOTIFS[(seed >> 16) % len(DRAWN_MOTIFS)]
 
-    sentences = [s.strip() for s in text.replace("\n", " ").split(".") if s.strip()]
-    blurb = ". ".join(sentences[:3])
-    blurb = (blurb + ".") if blurb else f"{title} von {author}."
-
     return ArtDirection(
         mood=", ".join(palette.tone[:3]) or "sachlich",
         keywords=list(palette.tone[:4]) or ["literatur"],
@@ -359,7 +347,6 @@ def fallback_direction(
         secondary=palette.secondary,
         title_case="upper" if family in ("geometric", "grotesk", "grotesk_condensed") else "title",
         genre_line=genre,
-        blurb=blurb[:600],
         image_prompt=_FALLBACK_IMAGE_PROMPT.get(
             style, _FALLBACK_IMAGE_PROMPT[DEFAULT_STYLE]
         ),
@@ -427,7 +414,6 @@ def apply_overrides(
     artwork: str | None = None,
     motif: str | None = None,
     genre_line: str | None = None,
-    blurb: str | None = None,
 ) -> ArtDirection:
     """Let the caller pin any part of the brief.
 
@@ -451,8 +437,6 @@ def apply_overrides(
         data["motif"] = motif
     if genre_line:
         data["genre_line"] = genre_line
-    if blurb:
-        data["blurb"] = blurb
     if palette_key:
         try:
             p = PALETTES_BY_KEY[palette_key]

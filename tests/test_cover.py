@@ -16,15 +16,8 @@ from covers.artdirection import (
     fallback_direction,
     system_prompt,
 )
-from covers.formats import FORMATS, geometry, resolve_format, spine_mm
-from covers.layout import (
-    Content,
-    Ctx,
-    _teaser,
-    artwork_plan,
-    build_front,
-    build_spread,
-)
+from covers.formats import FORMATS, geometry, resolve_format
+from covers.layout import Content, Ctx, artwork_plan, build_front
 from covers.main import app
 from covers.typography import face, fit_display, umlaut_leading
 
@@ -34,35 +27,13 @@ client = TestClient(app)
 # --- Geometry ---
 
 
-def test_spine_grows_with_page_count():
-    fmt = FORMATS["kiwi_paperback"]
-    assert spine_mm(fmt, 600) > spine_mm(fmt, 200) > 0
-
-
-def test_hardcover_spine_clears_the_boards():
-    hc = FORMATS["kiwi_hardcover"]
-    pb = FORMATS["kiwi_paperback"]
-    # Same block, but the jacket has to wrap two 2.5 mm boards.
-    assert spine_mm(hc, 300) > spine_mm(pb, 300) + 2 * hc.board_mm
-
-
-def test_sheet_is_the_sum_of_its_panels():
-    geo = geometry(FORMATS["kiwi_klappenbroschur"], pages=320)
-    panels = sum(p.w_mm for p in geo.panels)
-    assert geo.sheet_w_mm == pytest.approx(panels + 2 * geo.bleed_mm)
-    assert geo.sheet_h_mm == pytest.approx(geo.panel_h_mm + 2 * geo.bleed_mm)
-    assert [p.name for p in geo.panels] == [
-        "back_flap",
-        "back",
-        "spine",
-        "front",
-        "front_flap",
-    ]
-
-
-def test_flapless_format_has_three_panels():
-    geo = geometry(FORMATS["rororo_taschenbuch"], pages=200)
-    assert [p.name for p in geo.panels] == ["back", "spine", "front"]
+def test_hardcover_front_is_sized_to_the_case():
+    """A jacket wraps the boards, so its front gains the Überstand."""
+    hc = geometry(FORMATS["kiwi_hardcover"])
+    assert hc.panel_w_mm == FORMATS["kiwi_hardcover"].trim_w_mm + 3.0
+    assert hc.panel_h_mm == FORMATS["kiwi_hardcover"].trim_h_mm + 6.0
+    pb = geometry(FORMATS["kiwi_paperback"])
+    assert (pb.panel_w_mm, pb.panel_h_mm) == (125.0, 190.0)
 
 
 def test_unknown_format_names_the_alternatives():
@@ -128,11 +99,11 @@ def test_shaping_handles_german_orthography():
 # --- Rendering ---
 
 
-def _ctx(format_key="kiwi_paperback", pages=288, title="Die Reise", **kwargs):
+def _ctx(format_key="kiwi_paperback", title="Die Reise", **kwargs):
     direction = fallback_direction("Ein Roman über eine Reise.", title, "A. Autor")
     for k, v in kwargs.items():
         direction = direction.model_copy(update={k: v})
-    geo = geometry(FORMATS[format_key], pages=pages)
+    geo = geometry(FORMATS[format_key])
     return Ctx(
         geo=geo,
         direction=direction,
@@ -140,9 +111,7 @@ def _ctx(format_key="kiwi_paperback", pages=288, title="Die Reise", **kwargs):
             title=title,
             author="A. Autor",
             genre_line="Roman",
-            blurb="Eine Frau verlässt ihre Stadt. Sie kommt nicht zurück. Der Rest ist Weg.",
             imprint="Kiepenheuer & Witsch",
-            isbn="978-3-462-00000-0",
         ),
         palette=direction.palette,
         seed=42,
@@ -150,13 +119,10 @@ def _ctx(format_key="kiwi_paperback", pages=288, title="Die Reise", **kwargs):
 
 
 @pytest.mark.parametrize("template", TEMPLATES)
-def test_every_template_renders_front_and_spread(template):
-    ctx = _ctx(template=template)
-    front = build_front(ctx)
-    spread = build_spread(ctx)
-    for svg in (front, spread):
-        assert svg.startswith("<svg") and svg.endswith("</svg>")
-        assert "<path" in svg  # type made it in
+def test_every_template_renders_a_front(template):
+    svg = build_front(_ctx(template=template))
+    assert svg.startswith("<svg") and svg.endswith("</svg>")
+    assert "<path" in svg  # type made it in
 
 
 def test_front_canvas_is_the_trim_plus_bleed():
@@ -164,14 +130,6 @@ def test_front_canvas_is_the_trim_plus_bleed():
     svg = build_front(ctx)
     assert f'width="{ctx.geo.front_bleed_w_mm:.3f}mm"' in svg
     assert f'height="{ctx.geo.front_bleed_h_mm:.3f}mm"' in svg
-
-
-def test_front_panel_is_clipped_without_a_transform_on_the_same_group():
-    # An element's transform also applies to its clip-path, so the two must not
-    # share a group or the front panel clips itself off the sheet.
-    svg = build_spread(_ctx("kiwi_klappenbroschur"))
-    assert 'clip-path="url(#clip-front-panel)">' in svg
-    assert 'clip-path="url(#clip-front-panel)" transform' not in svg
 
 
 def _path_y_range(d: str) -> tuple[float, float]:
@@ -246,34 +204,6 @@ def test_kiwi_flat_type_stack_clears_the_artwork(format_key, title_case, title):
     )
 
 
-def test_narrow_spine_is_reported_not_lettered():
-    ctx = _ctx("rororo_taschenbuch", pages=96)
-    build_spread(ctx)
-    assert any("too narrow" in n for n in ctx.notes)
-
-
-def test_wide_spine_is_lettered():
-    ctx = _ctx("kiwi_hardcover", pages=600)
-    build_spread(ctx)
-    assert not any("too narrow" in n for n in ctx.notes)
-
-
-def test_teaser_keeps_the_opening_sentences():
-    blurb = "Eine Frau geht fort. Sie kommt nicht zurück. Der Rest ist Weg."
-    assert _teaser(blurb) == "Eine Frau geht fort. Sie kommt nicht zurück."
-    assert _teaser("Ein Satz ohne Punkt") == "Ein Satz ohne Punkt."
-
-
-def test_back_cover_teases_only_when_a_flap_carries_the_blurb():
-    """On a flapped jacket the full Klappentext belongs on the flap, not twice."""
-    flapped = build_spread(_ctx("kiwi_klappenbroschur"))
-    plain = build_spread(_ctx("kiwi_paperback"))
-    # The unflapped back sets the whole blurb, so it carries more type.
-    assert plain.count("<path") > 0 and flapped.count("<path") > 0
-    assert _ctx("kiwi_klappenbroschur").geo.flap_mm > 0
-    assert _ctx("kiwi_paperback").geo.flap_mm == 0
-
-
 # --- HTTP ---
 
 
@@ -289,7 +219,7 @@ def test_catalogue_lists_the_german_formats():
     assert "rororo_band" in body["templates"]
 
 
-def test_generate_returns_assets_and_geometry(tmp_path, monkeypatch):
+def test_generate_returns_the_image_and_geometry(tmp_path, monkeypatch):
     monkeypatch.setattr("covers.main.OUTPUT_DIR", tmp_path)
     response = client.post(
         "/generate",
@@ -298,26 +228,18 @@ def test_generate_returns_assets_and_geometry(tmp_path, monkeypatch):
             "title": "Der Rückweg",
             "author": "Maria Braun",
             "format": "kiwi_klappenbroschur",
-            "pages": 320,
             "template": "kiwi_flat",
             "palette": "kobalt",
-            "assets": ["front_png", "front_svg", "spread_pdf", "direction_json"],
         },
     )
     assert response.status_code == 200, response.text
     body = response.json()
-    assert set(body["assets"]) == {
-        "front_png",
-        "front_svg",
-        "spread_pdf",
-        "direction_json",
-    }
-    assert body["geometry"]["spine_mm"] > 0
+    assert body["image"] == f"/covers/{body['id']}/front.png"
+    assert body["geometry"]["panel_mm"] == [135.0, 215.0]
     assert body["art_direction"]["template"] == "kiwi_flat"
     assert body["art_direction"]["ground"] == "#1B3A8C"
 
-    url = body["assets"]["front_png"]
-    asset = client.get(url)
+    asset = client.get(body["image"])
     assert asset.status_code == 200
     assert asset.headers["content-type"] == "image/png"
 
@@ -325,7 +247,7 @@ def test_generate_returns_assets_and_geometry(tmp_path, monkeypatch):
 def test_generate_can_return_an_image_inline(tmp_path, monkeypatch):
     monkeypatch.setattr("covers.main.OUTPUT_DIR", tmp_path)
     response = client.post(
-        "/generate?inline=front_png",
+        "/generate?inline=true",
         json={"text": "Kurz.", "title": "Kurz", "author": "K. Autor"},
     )
     assert response.status_code == 200
@@ -342,10 +264,11 @@ def test_unknown_format_is_a_422(tmp_path, monkeypatch):
     assert response.status_code == 422
 
 
-def test_asset_route_refuses_traversal(tmp_path, monkeypatch):
+def test_image_route_refuses_traversal(tmp_path, monkeypatch):
     monkeypatch.setattr("covers.main.OUTPUT_DIR", tmp_path)
     assert client.get("/covers/abc123/../../etc/passwd").status_code == 404
-    assert client.get("/covers/..%2F..%2Fetc/passwd").status_code == 404
+    assert client.get("/covers/..%2F..%2Fetc/front.png").status_code == 404
+    assert client.get("/covers/abc123/front.svg").status_code == 404
 
 
 # --- Style registers ---
@@ -475,25 +398,20 @@ def test_other_origins_are_refused(cors_client, origin):
 
 
 def test_caller_pinned_copy_lands_on_the_brief_not_just_the_content():
-    """One fact, one value.
-
-    The blurb override used to be applied to Content only, so the response
-    carried the model's blurb in art_direction and the caller's in content.
-    """
+    """One fact, one value: a pinned genre line is the brief's genre line."""
     d = fallback_direction("Ein Buch.", "T", "A")
-    pinned = apply_overrides(d, genre_line="Essays", blurb="Vom Aufrufer gesetzt.")
+    pinned = apply_overrides(d, genre_line="Essays")
     assert pinned.genre_line == "Essays"
-    assert pinned.blurb == "Vom Aufrufer gesetzt."
     # An absent override leaves the brief alone.
     untouched = apply_overrides(d)
-    assert untouched.blurb == d.blurb
+    assert untouched.genre_line == d.genre_line
 
 
 @pytest.mark.parametrize(
     ("kwargs", "expected"),
     [
         ({}, "fallback"),
-        ({"genre_line": "Essays", "blurb": "Gesetzt."}, "caller"),
+        ({"genre_line": "Essays"}, "caller"),
     ],
 )
 async def test_suggestions_report_who_wrote_the_copy(tmp_path, kwargs, expected):
@@ -501,15 +419,12 @@ async def test_suggestions_report_who_wrote_the_copy(tmp_path, kwargs, expected)
 
     result = await create_cover(
         text="Zwei Schwestern erben ein Haus.", title="Das Haus", author="J. W.",
-        outdir=tmp_path, director="none", artwork="none",
-        assets=("front_svg",), **kwargs,
+        outdir=tmp_path, director="none", artwork="none", dpi=72, **kwargs,
     )
     s = result["suggestions"]
     assert s["genre_line"]["source"] == expected
-    assert s["blurb"]["source"] == expected
     # Whatever the source, the reported value is what the cover actually printed.
     assert s["genre_line"]["value"] == result["content"]["genre_line"]
-    assert s["blurb"]["value"] == result["content"]["blurb"]
 
 
 def test_response_carries_style_and_director(tmp_path, monkeypatch):
@@ -517,9 +432,8 @@ def test_response_carries_style_and_director(tmp_path, monkeypatch):
     body = client.post(
         "/generate",
         json={"text": "Ein Haus am Hafen.", "title": "Das Haus", "author": "J. W.",
-              "director": "none", "artwork": "none", "style": "typographic",
-              "assets": ["front_svg"]},
+              "director": "none", "artwork": "none", "style": "typographic", "dpi": 72},
     ).json()
     assert body["style"] == "typographic"
     assert body["director"] == "none"
-    assert body["suggestions"]["blurb"]["source"] == "fallback"
+    assert body["suggestions"]["genre_line"]["source"] == "fallback"

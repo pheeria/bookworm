@@ -2,7 +2,7 @@
 
 Type is shaped with HarfBuzz and emitted as outlined vector paths rather than SVG
 ``<text>`` elements. That keeps one source of truth for metrics -- the same shaped
-advances drive line fitting, the SVG, the PNG and the PDF -- and it means the
+advances drive line fitting, the SVG and the PNG -- and it means the
 output carries no font dependency, which is what a repro house wants.
 """
 
@@ -341,48 +341,3 @@ def fit_display(
             best = TextBlock(lines, size, lead, tracking, widths)
     assert best is not None
     return best
-
-
-def wrap_body(
-    text: str,
-    family: str,
-    size: float,
-    max_width: float,
-    *,
-    weight: str = "regular",
-    max_lines: int | None = None,
-) -> list[str]:
-    """Greedy wrap for body copy at a fixed size, honouring existing paragraphs."""
-    f = face(family, weight)
-    tracking = 0.0
-    lines: list[str] = []
-    for para in text.split("\n"):
-        words = [w for w in para.split() if w]
-        if not words:
-            lines.append("")
-            continue
-        current = words[0]
-        for word in words[1:]:
-            candidate = f"{current} {word}"
-            if f.measure(candidate, tracking) * size <= max_width:
-                current = candidate
-            else:
-                lines.append(current)
-                current = word
-        lines.append(current)
-    if max_lines is not None and len(lines) > max_lines:
-        lines = lines[:max_lines]
-        if lines:
-            lines[-1] = _ellipsise(f, lines[-1], size, max_width, tracking)
-    return lines
-
-
-def _ellipsise(f: Face, line: str, size: float, max_width: float, tracking: float) -> str:
-    words = line.split()
-    while words:
-        candidate = " ".join(words) + " …"
-        if f.measure(candidate, tracking) * size <= max_width:
-            return candidate
-        words.pop()
-    return "…"
-

@@ -19,11 +19,12 @@ import re
 from datetime import UTC, datetime
 from pathlib import Path
 
+from bson import ObjectId
 from fastapi import Request
 from pymongo import IndexModel, MongoClient
 from pymongo.collection import Collection
 
-from .models import Book
+from .models import Book, GeneratedCover
 
 SEED = Path(__file__).with_name("seed.json")
 
@@ -104,19 +105,61 @@ def get_book(books: Collection, slug: str) -> Book | None:
     return Book.model_validate(doc) if doc else None
 
 
-def insert(books: Collection, book: Book) -> None:
-    """Raises pymongo.errors.DuplicateKeyError on a duplicate slug or ISBN."""
+def insert(books: Collection, book: Book) -> Book:
+    """Store a new book, with no covers. DuplicateKeyError on a duplicate slug or ISBN.
+
+    ``generated_covers`` is not writable here: entries appear when a cover is
+    published (see ``put_cover_entry``).
+    """
     now = datetime.now(UTC)
+    book = book.model_copy(update={"generated_covers": []})
     books.insert_one(_document(book, created_at=now, updated_at=now))
+    return book
 
 
-def replace(books: Collection, slug: str, book: Book) -> bool:
-    """Replace the book at ``slug``. False if there is none; DuplicateKeyError on a clash."""
-    result = books.update_one(
-        {"slug": slug}, {"$set": _document(book, updated_at=datetime.now(UTC))}
-    )
-    return result.matched_count > 0
+def replace(books: Collection, slug: str, book: Book) -> Book | None:
+    """Replace the book at ``slug``, keeping its published cover entries.
+
+    Returns the stored book, or None if there is none; DuplicateKeyError on a clash.
+    """
+    fields = _document(book, updated_at=datetime.now(UTC))
+    del fields["generated_covers"]
+    if not books.update_one({"slug": slug}, {"$set": fields}).matched_count:
+        return None
+    return get_book(books, book.slug)
 
 
 def delete(books: Collection, slug: str) -> bool:
     return books.delete_one({"slug": slug}).deleted_count > 0
+
+
+# --- Published cover entries -------------------------------------------------
+# The only writes other packages make to a book: the short cover entries in
+# generated_covers. Keyed by the book's _id so they survive a slug rename.
+
+
+def find_book(books: Collection, slug: str) -> tuple[ObjectId, Book] | None:
+    """The book at ``slug`` with its database id, for linking records to it."""
+    doc = books.find_one({"slug": slug}, {"created_at": 0, "updated_at": 0})
+    return (doc.pop("_id"), Book.model_validate(doc)) if doc else None
+
+
+def put_cover_entry(books: Collection, book_id: ObjectId, entry: GeneratedCover) -> None:
+    """Replace the entry with ``entry.id``, or append it if the book has none."""
+    now = datetime.now(UTC)
+    value = entry.model_dump()
+    replaced = books.update_one(
+        {"_id": book_id, "generated_covers.id": entry.id},
+        {"$set": {"generated_covers.$": value, "updated_at": now}},
+    )
+    if not replaced.matched_count:
+        books.update_one(
+            {"_id": book_id}, {"$push": {"generated_covers": value}, "$set": {"updated_at": now}}
+        )
+
+
+def remove_cover_entry(books: Collection, book_id: ObjectId, cover_id: str) -> None:
+    books.update_one(
+        {"_id": book_id},
+        {"$pull": {"generated_covers": {"id": cover_id}}, "$set": {"updated_at": datetime.now(UTC)}},
+    )

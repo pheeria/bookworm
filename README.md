@@ -1,6 +1,6 @@
 # bookworm
 
-A FastAPI service that turns a text prompt into a print-ready book cover in the
+A FastAPI service that turns a text prompt into a print-ready front cover in the
 trade formats German literary publishers actually use.
 
 ```
@@ -8,13 +8,13 @@ POST /generate  { text, title, author }
    -> Claude writes the art direction and the image prompt
    -> OpenAI paints the artwork
    -> the typography engine sets the type in real trade geometry
-   -> front.png / front.jpg / front.svg / spread.pdf
+   -> front.png
 ```
 
 The division of labour is deliberate. Image models cannot set type — generated
 lettering is malformed, unlicensed and unprintable — so they never see the title.
-The image model paints artwork; the title, author, Gattungsbezeichnung, spine and
-back-cover copy are set afterwards as outlined vector type at the exact trim size.
+The image model paints artwork; the title, author, Gattungsbezeichnung and imprint
+are set afterwards as outlined vector type at the exact trim size.
 
 ## Layout
 
@@ -42,18 +42,15 @@ curl -X POST localhost:8000/generate -H 'content-type: application/json' -d '{
   "text": "Eine Übersetzerin kehrt in die Stadt ihrer Kindheit zurück und findet dort nur noch die Sprache wieder, in der sie nie gelebt hat.",
   "title": "Die zweite Sprache",
   "author": "Helena Marr",
-  "format": "kiwi_klappenbroschur",
-  "pages": 336,
-  "isbn": "978-3-462-00123-4",
-  "price": "€ 24,00 [D]"
+  "format": "kiwi_klappenbroschur"
 }'
 ```
 
-The response carries the art direction, the full print geometry, and URLs for each
-asset. `?inline=front_png` returns the image directly instead of JSON.
+The response carries the art direction, the print geometry, and `image`, the URL
+of the front PNG. `?inline=true` returns the PNG directly instead of JSON.
 
-Generate covers from the sample EPUBs, reading title, author and page count out of
-the container:
+Generate covers from the sample EPUBs, reading title, author and opening text out
+of the container:
 
 ```bash
 uv run scripts/from_epub.py examples/*.epub --local
@@ -66,7 +63,7 @@ missing key never turns into a 500:
 
 | Missing | What happens |
 |---|---|
-| `ANTHROPIC_API_KEY` | A deterministic brief is derived from a hash of the input: palette, layout, typeface and genre line are chosen from the built-in catalogue, and the blurb is cut from the input text. `art_direction_meta.source` reports `fallback`. |
+| `ANTHROPIC_API_KEY` | A deterministic brief is derived from a hash of the input: palette, layout, typeface and genre line are chosen from the built-in catalogue. `art_direction_meta.source` reports `fallback`. |
 | `OPENAI_API_KEY` | The cover renders with a procedural vector motif instead of painted artwork, and says so in `notes`. |
 
 Everything else — geometry, typesetting, rasterising — is local and deterministic.
@@ -90,13 +87,14 @@ runs covers alone, without MongoDB.)
 | `GET` | `/books` | Filter with `publisher`, `category` and `format`, and search title, author and subtitle with `q`. Paginate with `limit` (default 50, max 200) and `offset`. Returns `{items, total, limit, offset}`. |
 | `GET` | `/books/{slug}` | One book, or 404 |
 | `POST` | `/books` | 201; 409 if the slug or ISBN is taken |
-| `PUT` | `/books/{slug}` | Full replace, generated covers included; the slug may change |
+| `PUT` | `/books/{slug}` | Full replace, except `generated_covers`; the slug may change |
 | `DELETE` | `/books/{slug}` | 204 |
 
 Set `MONGODB_URI`, plus `MONGODB_USERNAME` and `MONGODB_PASSWORD` if the credentials
 are not in the URI. The database is `MONGODB_DB` (default `bookworm`), the collection
-`books`. Each book is one document with its covers embedded, with unique indexes on
-`slug` and `isbn`.
+`books`. Each book is one document, with unique indexes on `slug` and `isbn`. Its
+`generated_covers` are the short entries of its published covers (see below); book
+writes never set or clear them.
 
 On start the API creates the indexes, and seeds an empty collection from
 `src/books/seed.json`. After that the collection is the source of truth; editing
@@ -104,9 +102,45 @@ the seed does not touch a collection that already has books.
 
 Tests run against `mongomock` in memory and never reach a real cluster.
 
+## Book covers
+
+Covers made for a book live in their own `covers` collection, with their PNGs in
+GridFS (`cover_images`) in the same database, so they outlive a deploy. A cover is
+generated from the book's details, which it reads but never writes:
+
+| Cover field | From the book |
+|---|---|
+| `text` | `blurb`, after the `subtitle` when that says more than the genre |
+| `title`, `author` | `title`, `author` |
+| `imprint` | `publisher` |
+| `genre_line` | `category` |
+| `format` | publisher and binding, e.g. KiWi + Hardcover → `kiwi_hardcover`; unknown houses fall back to `din_a5_hardcover` or `kiwi_paperback` |
+
+Any cover field in the request body overrides the book. `type` (`heart`,
+`suspense`, `trend`, `discourse`) is a label; style and every other choice are the
+caller's.
+
+| Method | Path | |
+|---|---|---|
+| `POST` | `/books/{slug}/covers` | Generate a draft. 201 |
+| `GET` | `/books/{slug}/covers` | Newest first; filter with `status` and `type` |
+| `GET` | `/books/{slug}/covers/{id}` | The full record: options, effective request, brief, geometry, notes |
+| `PATCH` | `/books/{slug}/covers/{id}` | `type`, `color`, `theme`, without regenerating |
+| `POST` | `/books/{slug}/covers/{id}/regenerate` | Re-render with new options merged over the stored ones, from the book as it is now |
+| `POST` | `/books/{slug}/covers/{id}/publish` | Add `{id, type, url, color, theme}` to the book's `generated_covers` |
+| `POST` | `/books/{slug}/covers/{id}/unpublish` | Remove it again |
+| `DELETE` | `/books/{slug}/covers/{id}` | The cover, its image and its entry. 204 |
+| `GET` | `/cover-images/{id}.png` | The image. Not under the book, so a published `url` survives a slug change |
+
+A published cover's entry follows the cover: a PATCH or a regeneration updates it.
+`color` is the brief's ground colour, and `theme` is derived from it by the same
+rules the seed themes follow. Covers are linked to the book's database id, so they
+survive a slug change; deleting a book leaves its covers in the collection,
+unreachable.
+
 ## Formats
 
-`GET /catalogue` lists them with computed spine widths. These are the customary
+`GET /catalogue` lists them. These are the customary
 trade formats associated with each imprint, taken from general book-trade practice
 rather than from a publisher's production spec sheet. **Reconcile against the
 `Umschlagvorgabe` the publisher's production department sends you before going to
@@ -116,46 +150,34 @@ press.**
 |---|---|---|---|
 | `rororo_taschenbuch` | rororo Taschenbuch | 118 × 190 | Taschenbuch |
 | `rowohlt_paperback` | Paperback | 135 × 205 | Paperback |
-| `rowohlt_hardcover` | Hardcover mit Schutzumschlag | 140 × 215 | Hardcover, 85 mm Klappen |
+| `rowohlt_hardcover` | Hardcover mit Schutzumschlag | 140 × 215 | Hardcover |
 | `kiwi_paperback` | KiWi-Paperback | 125 × 190 | Paperback |
 | `kiwi_taschenbuch` | KiWi-Taschenbuch | 125 × 200 | Taschenbuch |
-| `kiwi_klappenbroschur` | Klappenbroschur | 135 × 215 | Klappenbroschur, 90 mm Klappen |
-| `kiwi_hardcover` | Hardcover Leinen mit Schutzumschlag | 135 × 210 | Hardcover, 85 mm Klappen |
+| `kiwi_klappenbroschur` | Klappenbroschur | 135 × 215 | Klappenbroschur |
+| `kiwi_hardcover` | Hardcover Leinen mit Schutzumschlag | 135 × 210 | Hardcover |
 | `suhrkamp_taschenbuch` | suhrkamp taschenbuch | 108 × 177 | Taschenbuch |
-| `din_a5_hardcover` | Hardcover DIN A5 | 148 × 210 | Hardcover, 85 mm Klappen |
-| `grossformat_hardcover` | Großformatiges Hardcover | 155 × 230 | Hardcover, 95 mm Klappen |
+| `din_a5_hardcover` | Hardcover DIN A5 | 148 × 210 | Hardcover |
+| `grossformat_hardcover` | Großformatiges Hardcover | 155 × 230 | Hardcover |
 
-What the geometry accounts for:
+What the geometry accounts for, on the front:
 
 - **Beschnittzugabe** 3 mm on every outer edge.
 - **Sicherheitsabstand** 5 mm — live type is kept inside it.
-- **Rückenstärke** from the page count: `Bogen × (g/m² × Volumen ÷ 1000)`. A
-  hardcover jacket additionally clears both boards plus a rounding allowance.
-  Below 7 mm the spine is left as flat colour and `notes` says why.
-- **Überstand** 3 mm on hardcovers, so the jacket is sized to the case rather
-  than the book block.
-- **Klappen** on flapped formats, laid out as `back flap | back | spine | front | front flap`.
-- A reserved white **EAN field** (45 × 30 mm) on the back cover. It is reserved,
-  not drawn — the printer drops in the real barcode film.
-- `marks: true` adds trim and fold lines for proofing.
+- **Überstand** 3 mm on hardcovers, so the jacket front is sized to the case
+  rather than the book block.
+- `marks: true` draws the trim box for proofing.
 
 ## Output
 
-| Asset | What it is |
-|---|---|
-| `front_svg` / `spread_svg` | Vector master. Type is already outlined. |
-| `front_pdf` / `spread_pdf` | Vector PDF at exact physical page size, **no embedded fonts** — nothing to license or substitute. |
-| `front_png` / `spread_png` | 300 dpi by default, with the resolution stamped in the file. |
-| `front_jpg` | sRGB JPEG for catalogue and web use. |
-| `direction_json` | The brief, geometry and seed, for reproducing the cover. |
-
-PDFs are RGB. A repro house that needs CMYK with a specific ICC profile should
-convert the vector PDF; converting here would mean guessing the press profile.
+One file: `front.png`, the front with its bleed, at 300 dpi by default with the
+resolution stamped in. It is rasterised from an SVG in which the type is already
+outlined, so it carries no font dependency. There is no back cover, spine or flap,
+and no JPEG, SVG or PDF.
 
 ## Typography
 
 Type is shaped with HarfBuzz and emitted as outlined glyph paths, so one set of
-shaped advances drives the line fitting, the SVG, the PNG and the PDF — there is
+shaped advances drives the line fitting, the SVG and the PNG — there is
 no second text engine to disagree with the first, and the output has no font
 dependency.
 
@@ -206,7 +228,7 @@ reliably leave a clear corner for the title, and asking it to produces worse
 pictures. A panel over a full-bleed illustration is both legible and idiomatic.
 
 Any part of the brief can be pinned: `template`, `type_family`, `palette`,
-`artwork`, `motif`, `genre_line`, `blurb`, `seed`. Pinning the template moves the
+`artwork`, `motif`, `genre_line`, `seed`. Pinning the template moves the
 typeface with it unless you pin that too. Pinning a `motif` implies you want it
 drawn.
 
@@ -214,12 +236,10 @@ Sixteen palettes ship in the flat, slightly austere register the idiom lives in 
 `rororo_rot`, `kobalt`, `schwefel`, `pergament`, `graphit` and so on. The art
 direction model may also return its own hex values.
 
-`spine_direction` defaults to `top_to_bottom`, which is what most contemporary
-German trade books do; `bottom_to_top` gives the older continental convention.
-
 ## Speed, and where it actually goes
 
-Measured on one cover (`kiwi_klappenbroschur`, 304 pp, `illustrated`, same text):
+Measured on one cover (`kiwi_klappenbroschur`, `illustrated`, same text), before the
+back cover and extra formats were dropped; the image call dominates either way:
 
 | Configuration | Wall clock |
 |---|---|
@@ -248,11 +268,10 @@ before committing: it is the one setting here that trades output quality for tim
 |---|---|
 | `claude` *(default)* | `claude-opus-5`. Set `COVERS_CLAUDE_MODEL` to change. |
 | `openai` | `gpt-5.4` via `responses.parse`. Set `COVERS_OPENAI_TEXT_MODEL`. One provider, one key, one bill. |
-| `none` | No text model at all. The image prompt is composed locally from your text behind a register preamble; palette, layout, genre line and back-cover copy come from the deterministic brief. |
+| `none` | No text model at all. The image prompt is composed locally from your text behind a register preamble; palette, layout and genre line come from the deterministic brief. |
 
 `director="none"` gives up real things: the palette is picked by hash rather than
-chosen for the book, the back-cover copy is cut from your input rather than written,
-and the Gattungsbezeichnung is a keyword guess. Worth it for drafts and bulk runs,
+chosen for the book, and the Gattungsbezeichnung is a keyword guess. Worth it for drafts and bulk runs,
 not for a cover going to press.
 
 ## Models
@@ -284,10 +303,10 @@ around them") and strictly for `typographic` ("restrict the palette to these").
 uv run pytest
 ```
 
-48 tests, ~2 seconds, no network and no credentials. `tests/conftest.py` strips
-`ANTHROPIC_API_KEY` / `OPENAI_API_KEY` from the environment for every test, because
-`covers.main` loads `.env` at import — without that the suite makes live, billed
-image-generation calls. Tests that exercise a provider path stub the client and set
+About 110 tests, ~3 seconds, no network and no credentials. `tests/conftest.py`
+strips the provider keys and `MONGODB_*` from the environment for every test,
+because `bookworm.main` loads `.env` at import — without that the suite makes live,
+billed image-generation calls. Books and covers run against in-memory `mongomock`. Tests that exercise a provider path stub the client and set
 their own key.
 
 Both live paths have been exercised end to end once: `claude-opus-5` for the brief

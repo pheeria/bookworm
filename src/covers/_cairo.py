@@ -6,8 +6,8 @@ cairo-2 was found" even when cairo is installed. Extending
 ``DYLD_FALLBACK_LIBRARY_PATH`` in-process still works because the macOS ctypes
 resolver re-reads the variable on every lookup.
 
-Import this module before ``cairosvg`` anywhere it is needed; it re-exports the
-two conversion functions so callers can just use this module instead.
+Import this module before ``cairosvg`` anywhere it is needed; it re-exports
+``svg2png`` so callers can just use this module instead.
 """
 
 import os
@@ -37,7 +37,7 @@ def _extend_library_path() -> None:
 _extend_library_path()
 
 try:
-    from cairosvg import svg2pdf, svg2png
+    from cairosvg import svg2png
 except OSError as exc:  # pragma: no cover - environment-dependent
     raise OSError(
         "libcairo could not be loaded, so covers cannot be rasterised.\n"
@@ -46,4 +46,4 @@ except OSError as exc:  # pragma: no cover - environment-dependent
         f"Underlying error: {exc}"
     ) from exc
 
-__all__ = ["svg2pdf", "svg2png"]
+__all__ = ["svg2png"]

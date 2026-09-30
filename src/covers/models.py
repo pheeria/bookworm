@@ -8,12 +8,11 @@ from .artdirection import MOTIFS, STYLES, TEMPLATES, Artwork
 from .formats import DEFAULT_FORMAT, FORMATS
 from .imagegen import Quality, Treatment
 from .palettes import PALETTE_KEYS
-from .assets import ASSET_NAMES
 from .typography import TYPE_FAMILIES
 
 
 class CoverRequest(BaseModel):
-    """A cover to generate.
+    """A front cover to generate.
 
     ``text`` is the brief: a description, a blurb, a synopsis or an excerpt.
     Everything else has a working default, and the override fields let you pin
@@ -30,16 +29,10 @@ class CoverRequest(BaseModel):
         default=DEFAULT_FORMAT,
         description=f"Trade format. One of: {', '.join(sorted(FORMATS))}.",
     )
-    pages: int = Field(default=288, ge=16, le=2000, description="Drives the spine width.")
     dpi: int = Field(default=300, ge=72, le=900)
 
     imprint: str | None = Field(
         default=None, description="Publisher wordmark; defaults to the format's imprint."
-    )
-    isbn: str = ""
-    price: str = Field(default="", description='e.g. "€ 24,00 [D]".')
-    translator: str = Field(
-        default="", description='e.g. "Aus dem Englischen von …".'
     )
 
     # --- art-direction overrides -------------------------------------------
@@ -51,7 +44,6 @@ class CoverRequest(BaseModel):
     genre_line: str | None = Field(
         default=None, description='Gattungsbezeichnung, e.g. "Roman".'
     )
-    blurb: str | None = Field(default=None, description="Override the back-cover copy.")
     style: Literal[STYLES] = Field(  # type: ignore[valid-type]
         default="illustrated",
         description=(
@@ -66,8 +58,8 @@ class CoverRequest(BaseModel):
         description=(
             "Who writes the brief. 'claude' and 'openai' both produce the same "
             "structured brief; 'none' skips the text model entirely and composes "
-            "the image prompt locally from your text, giving up the palette, genre "
-            "line and back-cover copy the brief would have decided. The brief is "
+            "the image prompt locally from your text, giving up the palette and "
+            "genre line the brief would have decided. The brief is "
             "~9s of a ~144s cover, so this is a provider choice, not a speed one -- "
             "see image_quality."
         ),
@@ -91,13 +83,7 @@ class CoverRequest(BaseModel):
 
     # --- output ------------------------------------------------------------
     seed: int | None = Field(default=None, description="Pin the procedural motif.")
-    marks: bool = Field(
-        default=False, description="Draw trim and fold lines for proofing."
-    )
-    spine_direction: Literal["top_to_bottom", "bottom_to_top"] = "top_to_bottom"
-    assets: list[Literal[ASSET_NAMES]] | None = Field(  # type: ignore[valid-type]
-        default=None, description=f"Defaults to a useful subset of: {', '.join(ASSET_NAMES)}."
-    )
+    marks: bool = Field(default=False, description="Draw the trim box for proofing.")
 
 
 CopySource = Literal["caller", "model", "fallback"]
@@ -110,9 +96,8 @@ class CopySuggestion(BaseModel):
     source: CopySource = Field(
         description=(
             "caller: you pinned it, the cover just used it. model: an art-direction "
-            "model wrote it. fallback: the deterministic brief made it up because no "
-            "model was reachable -- a fallback blurb is the first sentences of your "
-            "own input text, so a book record should rarely adopt it."
+            "model wrote it. fallback: the deterministic brief guessed it from keywords "
+            "because no model was reachable, so a book record should rarely adopt it."
         )
     )
 
@@ -121,12 +106,11 @@ class CopySuggestions(BaseModel):
     """Book copy the cover used. The book record decides whether to adopt it."""
 
     genre_line: CopySuggestion
-    blurb: CopySuggestion
 
 
 class CoverResponse(BaseModel):
     id: str
-    assets: dict[str, str] = Field(description="Asset name to a URL you can GET.")
+    image: str = Field(description="URL of the front cover PNG.")
     art_direction: dict[str, Any]
     art_direction_meta: dict[str, Any]
     artwork: dict[str, Any] | None
@@ -149,8 +133,6 @@ class FormatInfo(BaseModel):
     imprint: str
     binding: str
     trim_mm: list[float]
-    flap_mm: float
-    spine_mm_at_288pp: float
 
 
 class CatalogueResponse(BaseModel):
@@ -160,4 +142,3 @@ class CatalogueResponse(BaseModel):
     type_families: list[str]
     palettes: list[dict[str, Any]]
     motifs: list[str]
-    assets: list[str]

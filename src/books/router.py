@@ -3,7 +3,7 @@
     GET    /books           list, filter and search
     GET    /books/{slug}
     POST   /books
-    PUT    /books/{slug}    full replace
+    PUT    /books/{slug}    full replace, except generated_covers
     DELETE /books/{slug}
 """
 
@@ -58,21 +58,20 @@ def get_book(slug: str, books: Books) -> Book:
 @router.post("", response_model=Book, status_code=status.HTTP_201_CREATED)
 def create_book(book: Book, books: Books) -> Book:
     try:
-        db.insert(books, book)
+        return db.insert(books, book)
     except DuplicateKeyError as exc:
         raise _conflict(exc) from exc
-    return book
 
 
 @router.put("/{slug}", response_model=Book)
 def replace_book(slug: str, book: Book, books: Books) -> Book:
     try:
-        found = db.replace(books, slug, book)
+        stored = db.replace(books, slug, book)
     except DuplicateKeyError as exc:
         raise _conflict(exc) from exc
-    if not found:
+    if stored is None:
         raise _not_found(slug)
-    return book
+    return stored
 
 
 @router.delete("/{slug}", status_code=status.HTTP_204_NO_CONTENT)

@@ -2,7 +2,7 @@
 
 Each palette is a four-colour system: a ground the whole cover sits on, an ink
 that has to stay legible on it, an accent for rules, bands and the genre line,
-and a secondary for motifs and the spine. They double as the fallback vocabulary
+and a secondary for motifs. They double as the fallback vocabulary
 when no art-direction model is reachable.
 """
 

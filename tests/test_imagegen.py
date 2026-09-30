@@ -152,8 +152,19 @@ async def test_api_failure_degrades_instead_of_raising(monkeypatch):
     assert art is None
 
 
-async def test_artwork_is_embedded_in_the_cover_and_reported(tmp_path, stub_openai):
+async def test_artwork_is_embedded_in_the_cover_and_reported(tmp_path, stub_openai, monkeypatch):
+    from covers import render
     from covers.artdirection import ArtDirection
+
+    # The PNG is rasterised from this SVG; catch it on the way through.
+    fronts: list[str] = []
+    build_front = render.build_front
+
+    def spy(ctx):
+        fronts.append(build_front(ctx))
+        return fronts[-1]
+
+    monkeypatch.setattr(render, "build_front", spy)
 
     result = await create_cover(
         text="Ein Märchen aus dem Wald.",
@@ -161,13 +172,12 @@ async def test_artwork_is_embedded_in_the_cover_and_reported(tmp_path, stub_open
         author="Brüder Grimm",
         outdir=tmp_path,
         format_key="rowohlt_hardcover",
-        pages=464,
         template="photo_duotone",
         palette="nachtblau",
         artwork="generated",
-        assets=("front_svg", "front_png"),
     )
-    svg = (tmp_path / "front.svg").read_text(encoding="utf-8")
+    assert (tmp_path / "front.png").is_file()
+    svg = fronts[-1]
     assert "<image" in svg
     assert "data:image/jpeg;base64," in svg
 
@@ -182,7 +192,7 @@ async def test_artwork_is_embedded_in_the_cover_and_reported(tmp_path, stub_open
     # it actually covers, not the requested output dpi.
     plan = artwork_plan(
         ArtDirection.model_validate(result["art_direction"]),
-        geometry(FORMATS["rowohlt_hardcover"], pages=464),
+        geometry(FORMATS["rowohlt_hardcover"]),
     )
     assert plan is not None
     assert meta["placement_mm"][3] == pytest.approx(round(plan[3], 2), abs=0.01)
@@ -196,11 +206,9 @@ async def test_upscaling_is_disclosed_in_the_notes(tmp_path, stub_openai):
         author="Brüder Grimm",
         outdir=tmp_path,
         format_key="grossformat_hardcover",
-        pages=500,
         dpi=300,
         template="photo_duotone",
         artwork="generated",
-        assets=("front_svg",),
     )
     # 1536 px cannot be 300 dpi across a 155 mm panel, and the note says so.
     assert any("dpi native" in n for n in result["notes"])
@@ -275,7 +283,6 @@ async def test_none_director_makes_no_text_model_call(tmp_path, stub_openai):
         text="Zwei Schwestern erben das Haus ihrer Großmutter am Hafen.",
         title="Das Haus am Hafen", author="Jonas Wiechert",
         outdir=tmp_path, director="none", style="illustrated",
-        assets=("front_svg",),
     )
     assert result["art_direction_meta"]["source"] == "none"
     assert result["director"] == "none"
@@ -288,7 +295,7 @@ async def test_image_quality_is_forwarded_and_reported(tmp_path, stub_openai):
     result = await create_cover(
         text="Ein Haus am Hafen.", title="Das Haus", author="J. W.",
         outdir=tmp_path, director="none", image_quality="low",
-        artwork="generated", template="illustrated_full", assets=("front_svg",),
+        artwork="generated", template="illustrated_full",
     )
     assert stub_openai["quality"] == "low"
     assert result["artwork"]["quality"] == "low"

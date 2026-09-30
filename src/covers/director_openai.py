@@ -110,8 +110,8 @@ def direct_prompt_from_text(text: str, style: str = DEFAULT_STYLE) -> str:
 
     This is the genuinely single-call path: the book's own words are handed to the
     image model behind a register preamble. It costs no extra latency, and it gives
-    up everything the brief decides -- palette, layout, German genre line and
-    back-cover copy all come from the deterministic fallback instead.
+    up everything the brief decides -- palette, layout and German genre line all
+    come from the deterministic fallback instead.
     """
     preamble = _DIRECT_PREAMBLE.get(style, _DIRECT_PREAMBLE[DEFAULT_STYLE])
     body = " ".join(text.split())[:DIRECT_TEXT_CHARS]

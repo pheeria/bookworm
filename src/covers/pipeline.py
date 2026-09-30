@@ -1,10 +1,10 @@
-"""Orchestration: prompt in, print-ready cover out.
+"""Orchestration: prompt in, print-ready front cover out.
 
     text/title/author
         -> Claude writes the art direction and the image prompt
         -> OpenAI paints the artwork (optional)
         -> the typography engine sets the type in German trade geometry
-        -> SVG / PNG / JPEG / PDF
+        -> front.png
 """
 
 import asyncio
@@ -24,7 +24,6 @@ from .director_openai import direct_openai, direct_prompt_from_text
 from .formats import geometry, px, resolve_format
 from .layout import Content, Ctx, artwork_plan
 from .palettes import darkest_and_lightest
-from .assets import DEFAULT_ASSETS
 from .render import render
 
 log = logging.getLogger("covers.pipeline")
@@ -36,30 +35,23 @@ async def create_cover(
     author: str,
     outdir: Path,
     format_key: str | None = None,
-    pages: int = 288,
     dpi: int = 300,
     imprint: str | None = None,
-    isbn: str = "",
-    price: str = "",
-    translator: str = "",
     template: str | None = None,
     type_family: str | None = None,
     palette: str | None = None,
     artwork: str | None = None,
     motif: str | None = None,
     genre_line: str | None = None,
-    blurb: str | None = None,
     style: str = DEFAULT_STYLE,
     director: str = "claude",
     treatment: str = "none",
     image_quality: str | None = None,
     seed: int | None = None,
     marks: bool = False,
-    spine_direction: str = "top_to_bottom",
-    assets: tuple[str, ...] = DEFAULT_ASSETS,
 ) -> dict:
     fmt = resolve_format(format_key)
-    geo = geometry(fmt, pages=pages, dpi=dpi)
+    geo = geometry(fmt, dpi=dpi)
 
     if director == "openai":
         direction, ad_meta = await direct_openai(text, title, author, style=style)
@@ -81,7 +73,6 @@ async def create_cover(
         artwork=artwork,
         motif=motif,
         genre_line=genre_line,
-        blurb=blurb,
     )
     # Asking for a motif implies you want it drawn, even if the brief said the
     # cover should be purely typographic.
@@ -142,23 +133,15 @@ async def create_cover(
             "value": direction.genre_line,
             "source": "caller" if genre_line else written_by,
         },
-        "blurb": {
-            "value": direction.blurb,
-            "source": "caller" if blurb else written_by,
-        },
     }
 
     content = Content(
         title=title,
         author=author,
         genre_line=direction.genre_line,
-        blurb=direction.blurb,
         imprint=imprint if imprint is not None else (
             fmt.imprint if fmt.imprint != "allgemein" else ""
         ),
-        isbn=isbn,
-        price=price,
-        translator=translator,
     )
 
     ctx = Ctx(
@@ -169,11 +152,10 @@ async def create_cover(
         seed=seed,
         artwork_uri=artwork_uri,
         marks=marks,
-        spine_direction=spine_direction,
         notes=notes,
     )
 
-    result = await asyncio.to_thread(render, ctx, outdir, assets)
+    result = await asyncio.to_thread(render, ctx, outdir)
 
     return {
         "art_direction": direction.model_dump(),
@@ -185,6 +167,6 @@ async def create_cover(
         "style": style,
         "director": director,
         "seed": seed,
-        "files": {k: str(v) for k, v in result.files.items()},
+        "image": str(result.image),
         "notes": result.notes,
     }

@@ -4,7 +4,7 @@
     uv run scripts/from_epub.py examples/die-verwandlung.epub
     uv run scripts/from_epub.py examples/*.epub --format rororo_taschenbuch
 
-Reads the title, author and page estimate straight out of the container, so the
+Reads the title, author and opening text straight out of the container, so the
 sample books in examples/ can be used as real input without retyping anything.
 Talks to the running API by default; --local skips HTTP and calls the pipeline.
 """
@@ -74,13 +74,10 @@ def read_epub(path: Path, excerpt_chars: int = 3000) -> dict:
                 chunks.append(body)
 
     excerpt = " ".join(chunks)[:excerpt_chars]
-    # ~1800 characters to a typeset page is a standard German trade estimate.
-    pages = max(48, round(total_chars / 1800 / 2) * 2)
     return {
         "title": title,
         "author": author,
         "text": (description + "\n\n" + excerpt).strip() if description else excerpt,
-        "pages": pages,
         "chars": total_chars,
     }
 
@@ -93,9 +90,7 @@ async def run_local(book: dict, outdir: Path, **overrides) -> dict:
         text=book["text"],
         title=book["title"],
         author=book["author"],
-        pages=book["pages"],
         outdir=outdir,
-        assets=("front_png", "front_svg", "spread_pdf", "direction_json"),
         **overrides,
     )
 
@@ -107,7 +102,6 @@ def run_http(book: dict, base_url: str, **overrides) -> dict:
         "text": book["text"],
         "title": book["title"],
         "author": book["author"],
-        "pages": book["pages"],
         **overrides,
     }
     response = httpx.post(f"{base_url}/generate", json=payload, timeout=300)
@@ -141,19 +135,17 @@ def main() -> int:
         book = read_epub(epub)
         print(f"\n{epub.name}")
         print(f"  {book['author']} — {book['title']}")
-        print(f"  {book['chars']:,} characters → {book['pages']} pages")
+        print(f"  {book['chars']:,} characters")
         if args.local:
             result = asyncio.run(
                 run_local(book, args.outdir / epub.stem, format_key=args.format_key, **overrides)
             )
-            for name, path in result["files"].items():
-                print(f"  {name}: {path}")
+            print(f"  front: {result['image']}")
         else:
             result = run_http(
                 book, args.base_url, format=args.format_key, **overrides
             )
-            for name, url in result["assets"].items():
-                print(f"  {name}: {args.base_url}{url}")
+            print(f"  front: {args.base_url}{result['image']}")
         for note in result.get("notes", []):
             print(f"  note: {note}")
     return 0

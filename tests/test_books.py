@@ -7,7 +7,9 @@ import mongomock
 import pytest
 from fastapi.testclient import TestClient
 
+from books import db
 from books.db import SEED
+from books.models import GeneratedCover
 from bookworm.main import create_app
 
 SEEDED = json.loads(SEED.read_text(encoding="utf-8"))
@@ -76,18 +78,29 @@ def test_crud_round_trip(client):
     assert client.post("/books", json=new_book(slug="other-slug")).status_code == 409  # isbn
     assert client.get("/books").json()["total"] == 26
 
-    cover = {"id": "abc123", "type": "suspense", "url": "/covers/abc123/front.jpg",
-             "color": "#101010", "theme": book["original_cover"]["theme"]}
-    replaced = client.put(f"/books/{slug}",
-                          json={**book, "title": "Die dritte Sprache", "generated_covers": [cover]})
+    replaced = client.put(f"/books/{slug}", json={**book, "title": "Die dritte Sprache"})
     assert replaced.status_code == 200
-    fetched = client.get(f"/books/{slug}").json()
-    assert fetched["title"] == "Die dritte Sprache"
-    assert fetched["generated_covers"] == [cover]
+    assert replaced.json() == client.get(f"/books/{slug}").json()
+    assert replaced.json()["title"] == "Die dritte Sprache"
 
     assert client.delete(f"/books/{slug}").status_code == 204
     assert client.get(f"/books/{slug}").status_code == 404
     assert client.delete(f"/books/{slug}").status_code == 404
+
+
+def test_generated_covers_are_not_writable_through_books(client):
+    """Entries come from publishing a cover; book writes neither set nor clear them."""
+    cover = {"id": "0123456789abcdef", "type": "suspense", "url": "/cover-images/x.png",
+             "color": "#101010", "theme": SEEDED[0]["original_cover"]["theme"]}
+    book = new_book()
+    created = client.post("/books", json={**book, "generated_covers": [cover]}).json()
+    assert created["generated_covers"] == []
+
+    books = client.app.state.books
+    book_id, _ = db.find_book(books, book["slug"])
+    db.put_cover_entry(books, book_id, GeneratedCover.model_validate(cover))
+    replaced = client.put(f"/books/{book['slug']}", json={**book, "generated_covers": []}).json()
+    assert replaced["generated_covers"] == [cover]
 
 
 def test_put_can_rename_but_not_onto_another_book(client):

@@ -1,7 +1,7 @@
 """FastAPI app.
 
-    POST /generate              a cover from a text prompt
-    GET  /covers/{id}/{file}    the rendered assets
+    POST /generate              a front cover from a text prompt
+    GET  /covers/{id}/front.png the rendered cover
     GET  /catalogue             formats, templates, palettes, motifs
     GET  /healthz
 """
@@ -17,7 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
 from .artdirection import MOTIFS, STYLES, TEMPLATES
-from .formats import FORMATS, spine_mm
+from .formats import FORMATS
 from .models import (
     CatalogueResponse,
     CoverRequest,
@@ -26,7 +26,7 @@ from .models import (
 )
 from .palettes import PALETTES
 from .pipeline import create_cover
-from .assets import ASSET_NAMES, DEFAULT_ASSETS, MEDIA_BY_SUFFIX
+from .render import FILENAME
 from .typography import TYPE_FAMILIES
 
 logging.basicConfig(level=os.environ.get("COVERS_LOG_LEVEL", "INFO"))
@@ -34,17 +34,15 @@ logging.basicConfig(level=os.environ.get("COVERS_LOG_LEVEL", "INFO"))
 OUTPUT_DIR = Path(os.environ.get("COVERS_OUTPUT_DIR", "out")).resolve()
 
 def _file(path: Path) -> FileResponse:
-    media = MEDIA_BY_SUFFIX.get(path.suffix, "application/octet-stream")
-    return FileResponse(path, media_type=media)
+    return FileResponse(path, media_type="image/png")
 
 app = FastAPI(
     title="bookworm",
     version="0.1.0",
-    summary="Print-ready book covers in German trade formats, from a text prompt.",
+    summary="Print-ready front covers in German trade formats, from a text prompt.",
     description=(
         "Claude writes the art direction, OpenAI paints the artwork, and the type is "
-        "set as outlined vectors in real German trade geometry -- trim, bleed, spine "
-        "and flaps included."
+        "set as outlined vectors in real German trade geometry, trim and bleed included."
     ),
 )
 
@@ -98,8 +96,6 @@ def catalogue() -> CatalogueResponse:
                 imprint=f.imprint,
                 binding=f.binding,
                 trim_mm=[f.trim_w_mm, f.trim_h_mm],
-                flap_mm=f.flap_mm,
-                spine_mm_at_288pp=spine_mm(f, 288),
             )
             for f in FORMATS.values()
         ],
@@ -108,51 +104,32 @@ def catalogue() -> CatalogueResponse:
         type_families=list(TYPE_FAMILIES),
         palettes=[asdict(p) for p in PALETTES],
         motifs=list(MOTIFS),
-        assets=list(ASSET_NAMES),
     )
 
 
 @app.post("/generate", response_model=CoverResponse)
 async def generate(
     request: CoverRequest,
-    inline: str | None = Query(
-        default=None,
-        description=(
-            "Return one asset directly instead of JSON, e.g. inline=front_png."
-        ),
-    ),
+    inline: bool = Query(default=False, description="Return the PNG instead of JSON."),
 ) -> Response | CoverResponse:
-    assets = tuple(request.assets) if request.assets else DEFAULT_ASSETS
-    if inline is not None:
-        if inline not in ASSET_NAMES:
-            raise HTTPException(422, f"inline must be one of: {', '.join(ASSET_NAMES)}")
-        if inline not in assets:
-            assets += (inline,)
-
     cover_id = uuid.uuid4().hex[:16]
-    outdir = OUTPUT_DIR / cover_id
-
     try:
         result = await create_cover(
-            **request.model_dump(exclude={"format", "assets"}),
+            **request.model_dump(exclude={"format"}),
             format_key=request.format,
-            outdir=outdir,
-            assets=assets,
+            outdir=OUTPUT_DIR / cover_id,
         )
     except KeyError as exc:
         raise HTTPException(422, str(exc.args[0] if exc.args else exc)) from exc
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
 
-    if inline is not None:
-        return _file(Path(result["files"][inline]))
+    if inline:
+        return _file(Path(result["image"]))
 
     return CoverResponse(
         id=cover_id,
-        assets={
-            name: f"/covers/{cover_id}/{Path(p).name}"
-            for name, p in result["files"].items()
-        },
+        image=f"/covers/{cover_id}/{FILENAME}",
         art_direction=result["art_direction"],
         art_direction_meta=result["art_direction_meta"],
         artwork=result["artwork"],
@@ -166,12 +143,10 @@ async def generate(
     )
 
 
-@app.get("/covers/{cover_id}/{filename}")
-def asset(cover_id: str, filename: str) -> FileResponse:
-    """Serve a rendered asset, refusing anything that escapes the output dir."""
-    if not cover_id.isalnum():
-        raise HTTPException(404, "not found")
-    path = (OUTPUT_DIR / cover_id / filename).resolve()
-    if not path.is_relative_to(OUTPUT_DIR) or not path.is_file():
+@app.get(f"/covers/{{cover_id}}/{FILENAME}")
+def image(cover_id: str) -> FileResponse:
+    """Serve a rendered cover."""
+    path = OUTPUT_DIR / cover_id / FILENAME
+    if not cover_id.isalnum() or not path.is_file():
         raise HTTPException(404, "not found")
     return _file(path)
