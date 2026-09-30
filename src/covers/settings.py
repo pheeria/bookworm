@@ -16,8 +16,14 @@ def openai_text_model() -> str:
     return os.environ.get("COVERS_OPENAI_TEXT_MODEL", "gpt-5.4")
 
 
-def image_model() -> str:
-    return os.environ.get("COVERS_IMAGE_MODEL", "gpt-image-2")
+def openai_image_model() -> str:
+    """The OpenAI model used when a cover asks for ``image_model="openai"``.
+
+    COVERS_IMAGE_MODEL is the name this setting had before other image models came.
+    """
+    return os.environ.get("COVERS_OPENAI_IMAGE_MODEL") or os.environ.get(
+        "COVERS_IMAGE_MODEL", "gpt-image-2"
+    )
 
 
 def director() -> str:

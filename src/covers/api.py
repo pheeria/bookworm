@@ -30,7 +30,7 @@ router = APIRouter(tags=["covers"])
 #: The default browser-origin policy is any localhost port, which covers a dev
 #: front end without opening the service to the web at large. That matters more
 #: here than for a read-only API: `POST /generate` spends real money on image
-#: generation, so a wildcard would let any page you happen to visit bill your
+#: generation, so a wildcard would let any page you happen to visit bill your fal or
 #: OpenAI account. Set COVERS_CORS_ORIGINS to a comma-separated list, or "*".
 _LOCALHOST = r"http://(localhost|127\.0\.0\.1)(:\d+)?"
 

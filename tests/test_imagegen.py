@@ -1,8 +1,8 @@
-"""The OpenAI artwork path, exercised against a stub client.
+"""The artwork path, for each image model, exercised against stub clients.
 
 These tests cover the plumbing around the call -- prompt hardening, cropping to
-the planned placement, the duotone treatment, embedding, and the effective-dpi
-report. They do not call OpenAI; a live call needs OPENAI_API_KEY.
+the planned placement, the duotone treatment, embedding, the effective-dpi report,
+and the size arguments each fal model takes. They call neither OpenAI nor fal.
 """
 
 import base64
@@ -134,7 +134,7 @@ async def test_missing_key_degrades_instead_of_raising(monkeypatch):
     art = await imagegen.generate(
         "Fog", ("#000000",), target_w_px=100, target_h_px=100, model="openai"
     )
-    assert art is None
+    assert isinstance(art, imagegen.Unavailable)
 
 
 async def test_api_failure_degrades_instead_of_raising(monkeypatch):
@@ -151,7 +151,7 @@ async def test_api_failure_degrades_instead_of_raising(monkeypatch):
     art = await imagegen.generate(
         "Fog", ("#000000",), target_w_px=100, target_h_px=100, model="openai"
     )
-    assert art is None
+    assert isinstance(art, imagegen.Unavailable)
 
 
 async def test_artwork_is_embedded_in_the_cover_and_reported(stub_openai, monkeypatch):
@@ -313,15 +313,17 @@ async def test_image_quality_is_forwarded_and_reported(stub_openai):
 # --- fal: Nano Banana Pro and FLUX.2 Pro ---
 
 
-def _png_data_uri(size=(512, 768), colour=(40, 60, 90)) -> str:
+def _png(size=(512, 768), colour=(40, 60, 90)) -> bytes:
     buf = io.BytesIO()
     Image.new("RGB", size, colour).save(buf, format="PNG")
-    return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+    return buf.getvalue()
 
 
 @pytest.fixture
 def stub_fal(monkeypatch):
-    """Stand in for fal_client.AsyncClient; record what it was asked."""
+    """Stand in for fal_client.AsyncClient and fal's CDN; record what they were asked."""
+    import httpx
+
     recorder: dict = {}
 
     class _Client:
@@ -329,16 +331,17 @@ def stub_fal(monkeypatch):
             recorder["key"] = key
 
         async def subscribe(self, application, arguments, **kw):
-            recorder["app"], recorder["arguments"] = application, arguments
-            if recorder.get("fail"):
-                import fal_client
-
-                raise fal_client.FalClientHTTPError("boom", 500, {}, None)
-            return {"images": [{"url": recorder.get("url") or _png_data_uri(),
+            recorder.update(app=application, arguments=arguments, subscribe=kw)
+            return {"images": [{"url": "https://fal.media/files/cover.jpg",
                                 "description": "a door"}], "seed": 7}
+
+    async def get(self, url, **kw):
+        recorder["fetched"] = url
+        return httpx.Response(200, content=_png(), request=httpx.Request("GET", url))
 
     monkeypatch.setenv("FAL_API_KEY", "fal-test-key")
     monkeypatch.setattr("fal_client.AsyncClient", _Client)
+    monkeypatch.setattr(httpx.AsyncClient, "get", get)
     return recorder
 
 
@@ -356,12 +359,13 @@ async def test_fal_models_paint_the_artwork(stub_fal, model, app):
         "A red door in fog", ("#101A2C", "#EDE7DA"),
         target_w_px=400, target_h_px=600, quality="high", model=model,
     )
-    assert art is not None and art.image.size == (400, 600)  # cropped to the placement
+    assert art.image.size == (400, 600)  # cropped to the placement
     assert stub_fal["key"] == "fal-test-key"  # from FAL_API_KEY, passed explicitly
     assert stub_fal["app"] == app
-    args = stub_fal["arguments"]
-    assert args["output_format"] == "png" and args["sync_mode"] is True
-    assert "no text" in args["prompt"].lower()  # the lettering guards still apply
+    assert stub_fal["arguments"]["output_format"] == "jpeg"
+    assert stub_fal["subscribe"]["interval"] >= 1.0  # not the client's 0.1 s polling
+    assert stub_fal["fetched"] == "https://fal.media/files/cover.jpg"  # binary, from the CDN
+    assert "no text" in stub_fal["arguments"]["prompt"].lower()  # lettering guards apply
     assert art.meta["provider"] == "fal" and art.meta["model"] == app
     assert art.meta["native_px"] == [512, 768]
 
@@ -381,40 +385,26 @@ async def test_flux_gets_the_placements_exact_aspect(stub_fal):
     assert abs(size["width"] / size["height"] - 1594 / 2480) < 0.01
 
 
-async def test_a_fal_url_result_is_downloaded(stub_fal, monkeypatch):
-    stub_fal["url"] = "https://fal.media/files/cover.png"
-    png = base64.b64decode(_png_data_uri().split(",", 1)[1])
+async def test_fal_failure_says_why(stub_fal, monkeypatch):
+    import fal_client
 
-    class _Response:
-        content = png
+    async def boom(self, application, arguments, **kw):
+        raise fal_client.FalClientHTTPError("boom", 500, {}, None)
 
-        def raise_for_status(self):
-            pass
-
-    class _Http:
-        def __init__(self, **kw):
-            pass
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *exc):
-            pass
-
-        async def get(self, url):
-            stub_fal["fetched"] = url
-            return _Response()
-
-    monkeypatch.setattr("httpx.AsyncClient", _Http)
+    monkeypatch.setattr(fal_client.AsyncClient, "subscribe", boom, raising=False)
     art = await imagegen.generate("x", ("#000000",), target_w_px=100, target_h_px=150)
-    assert art is not None and stub_fal["fetched"] == "https://fal.media/files/cover.png"
+    assert isinstance(art, imagegen.Unavailable) and "boom" in art.reason
 
 
-async def test_fal_failure_or_no_key_falls_back(stub_fal, monkeypatch):
-    stub_fal["fail"] = True
-    assert await imagegen.generate("x", ("#000000",), target_w_px=100, target_h_px=150) is None
-    monkeypatch.delenv("FAL_API_KEY")
-    assert await imagegen.generate("x", ("#000000",), target_w_px=100, target_h_px=150) is None
+async def test_no_fal_key_says_so():
+    art = await imagegen.generate("x", ("#000000",), target_w_px=100, target_h_px=150)
+    assert art == imagegen.Unavailable("no FAL_API_KEY")
+
+
+def test_every_image_model_has_a_spec():
+    from typing import get_args
+
+    assert set(imagegen.IMAGE_MODELS) == set(get_args(imagegen.ImageModel))
 
 
 async def test_the_cover_note_names_the_missing_key():

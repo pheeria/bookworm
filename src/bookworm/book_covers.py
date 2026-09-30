@@ -85,7 +85,7 @@ class BookCoverRequest(BaseModel):
     type: ReaderType = Field(description="Who the cover is for; decides its mood and faces.")
     image_model: ImageModel = Field(
         default=DEFAULT_IMAGE_MODEL,
-        description="Who paints the artwork: nano-banana-pro, flux-2-pro (both on fal) or openai.",
+        description=CoverRequest.model_fields["image_model"].description,
     )
     text: str | None = Field(
         default=None, min_length=1,

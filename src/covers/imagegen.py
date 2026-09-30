@@ -15,8 +15,9 @@ import io
 import logging
 import math
 import os
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Literal, get_args
 
 from PIL import Image, ImageOps
 
@@ -30,27 +31,70 @@ log = logging.getLogger("covers.imagegen")
 Quality = Literal["low", "medium", "high", "auto"]
 
 #: The image models a cover can be painted with. ``openai`` is whichever model
-#: COVERS_IMAGE_MODEL names (gpt-image-2 by default).
+#: COVERS_OPENAI_IMAGE_MODEL names (gpt-image-2 by default).
 ImageModel = Literal["nano-banana-pro", "flux-2-pro", "openai"]
 DEFAULT_IMAGE_MODEL: ImageModel = "nano-banana-pro"
 
-#: fal application ids.
-FAL_APPS = {"nano-banana-pro": "fal-ai/nano-banana-pro", "flux-2-pro": "fal-ai/flux-2-pro"}
 
-#: Aspect ratios Nano Banana Pro accepts.
-_NANO_RATIOS = ("21:9", "16:9", "3:2", "4:3", "5:4", "1:1", "4:5", "3:4", "2:3", "9:16")
+def _nearest(options: tuple[tuple[str, float], ...], aspect: float) -> str:
+    """The option whose aspect (w/h) is closest to ``aspect``, on a log scale."""
+    return min(options, key=lambda o: abs(math.log(o[1]) - math.log(aspect)))[0]
 
 
-def key_for(model: str) -> str:
-    """The environment variable an image model needs."""
-    return "OPENAI_API_KEY" if model == "openai" else "FAL_API_KEY"
+def _high(quality: str) -> bool:
+    return quality in ("high", "auto")
+
 
 #: Sizes gpt-image models accept, with their aspect ratios (w/h).
-_SIZES: tuple[tuple[str, float], ...] = (
-    ("1024x1536", 1024 / 1536),
-    ("1024x1024", 1.0),
-    ("1536x1024", 1536 / 1024),
+_OPENAI_SIZES = (("1024x1536", 1024 / 1536), ("1024x1024", 1.0), ("1536x1024", 1536 / 1024))
+#: Aspect ratios Nano Banana Pro accepts.
+_NANO_RATIOS = tuple(
+    (r, int(r.split(":")[0]) / int(r.split(":")[1]))
+    for r in ("21:9", "16:9", "3:2", "4:3", "5:4", "1:1", "4:5", "3:4", "2:3", "9:16")
 )
+
+
+def _nano_arguments(aspect: float, quality: str) -> dict:
+    """A fixed ratio and a resolution tier."""
+    return {
+        "aspect_ratio": _nearest(_NANO_RATIOS, aspect),
+        "resolution": "2K" if _high(quality) else "1K",
+        "num_images": 1,
+    }
+
+
+def _flux_arguments(aspect: float, quality: str) -> dict:
+    """A custom size at the placement's exact aspect, in multiples of 16."""
+    long_edge = 2048 if _high(quality) else 1024
+    w, h = (long_edge, long_edge / aspect) if aspect >= 1 else (long_edge * aspect, long_edge)
+    return {"image_size": {"width": round(w / 16) * 16, "height": round(h / 16) * 16}}
+
+
+@dataclass(frozen=True)
+class ModelSpec:
+    """Everything that differs between image models."""
+
+    key_env: str
+    #: fal application id; None for OpenAI, which has its own client.
+    app: str | None = None
+    #: fal only: the size (and other model-specific) arguments for an aspect and quality.
+    arguments: Callable[[float, str], dict] | None = None
+
+
+IMAGE_MODELS: dict[str, ModelSpec] = {
+    "nano-banana-pro": ModelSpec("FAL_API_KEY", "fal-ai/nano-banana-pro", _nano_arguments),
+    "flux-2-pro": ModelSpec("FAL_API_KEY", "fal-ai/flux-2-pro", _flux_arguments),
+    "openai": ModelSpec("OPENAI_API_KEY"),
+}
+assert set(IMAGE_MODELS) == set(get_args(ImageModel)), "ImageModel and IMAGE_MODELS disagree"
+
+
+@dataclass(frozen=True)
+class Unavailable:
+    """No artwork, and why: the cover falls back to a procedural motif and says so."""
+
+    reason: str
+
 
 Treatment = Literal["none", "duotone", "grayscale"]
 
@@ -87,10 +131,6 @@ class Artwork:
     meta: dict = field(default_factory=dict)
 
 
-def _best_size(aspect_w_over_h: float) -> str:
-    return min(_SIZES, key=lambda s: abs(s[1] - aspect_w_over_h))[0]
-
-
 def build_prompt(
     image_prompt: str,
     palette_hexes: tuple[str, ...],
@@ -115,21 +155,25 @@ async def generate(
     style: str = DEFAULT_STYLE,
     quality: str | None = None,
     model: ImageModel = DEFAULT_IMAGE_MODEL,
-) -> Artwork | None:
-    """Paint the front-cover artwork, or return ``None`` if the model is unavailable.
+) -> Artwork | Unavailable:
+    """Paint the front-cover artwork, or say why it could not be painted.
 
-    Returning ``None`` rather than raising lets the renderer fall back to a
-    procedural motif, so a missing key degrades the cover instead of the request.
+    Degrading rather than raising lets the renderer fall back to a procedural
+    motif, so a missing key costs the cover its picture, not the request.
     """
+    spec = IMAGE_MODELS[model]
+    if not (key := os.environ.get(spec.key_env)):
+        return Unavailable(f"no {spec.key_env}")
     quality = quality or settings.image_quality()
     prompt = build_prompt(image_prompt, palette_hexes, style)
     aspect = target_w_px / target_h_px
-    painted = (
-        await _openai(prompt, aspect, quality) if model == "openai"
-        else await _fal(model, prompt, aspect, quality)
+    painted = await (
+        _openai(prompt, aspect, quality) if spec.app is None
+        else _fal(spec, key, prompt, aspect, quality)
     )
-    if painted is None:
-        return None
+    if isinstance(painted, Unavailable):
+        log.warning("image generation with %s unavailable: %s", model, painted.reason)
+        return painted
     data, meta = painted
 
     # Decoding, resampling and toning a multi-megapixel image is CPU-bound.
@@ -148,28 +192,23 @@ async def generate(
     )
 
 
-async def _openai(prompt: str, aspect: float, quality: str) -> tuple[bytes, dict] | None:
-    if not os.environ.get("OPENAI_API_KEY"):
-        log.info("OPENAI_API_KEY not set; skipping artwork")
-        return None
-
+async def _openai(prompt: str, aspect: float, quality: str) -> tuple[str, dict] | Unavailable:
     import openai
 
-    model, size = settings.image_model(), _best_size(aspect)
+    model, size = settings.openai_image_model(), _nearest(_OPENAI_SIZES, aspect)
     client = openai.AsyncOpenAI(timeout=180.0)
     try:
         response = await client.images.generate(
             model=model, prompt=prompt, size=size, quality=quality, output_format="png", n=1,
         )
     except (TimeoutError, openai.OpenAIError) as exc:
-        log.warning("image generation failed (%s); falling back to a motif", exc)
-        return None
+        return Unavailable(f"{model} failed: {exc}")
 
     datum = response.data[0] if response.data else None
     if datum is None or not datum.b64_json:
-        log.warning("image generation returned no image data; falling back to a motif")
-        return None
-    return base64.b64decode(datum.b64_json), {
+        return Unavailable(f"{model} returned no image")
+    # Base64, decoded in the worker thread with the rest of the processing.
+    return datum.b64_json, {
         "provider": "openai",
         "model": model,
         "requested_size": size,
@@ -177,57 +216,43 @@ async def _openai(prompt: str, aspect: float, quality: str) -> tuple[bytes, dict
     }
 
 
-def fal_size(model: str, aspect: float, quality: str) -> dict:
-    """The size arguments a fal model takes, for artwork of this aspect (w/h).
-
-    Nano Banana Pro takes a fixed set of ratios and a resolution tier; FLUX.2 Pro a
-    custom size, which can match the placement exactly.
-    """
-    high = quality in ("high", "auto")
-    if model == "nano-banana-pro":
-        def distance(ratio: str) -> float:
-            w, h = ratio.split(":")
-            return abs(math.log(int(w) / int(h)) - math.log(aspect))
-        return {"aspect_ratio": min(_NANO_RATIOS, key=distance), "resolution": "2K" if high else "1K"}
-    long_edge = 2048 if high else 1024
-    w, h = (long_edge, long_edge / aspect) if aspect >= 1 else (long_edge * aspect, long_edge)
-    return {"image_size": {"width": round(w / 16) * 16, "height": round(h / 16) * 16}}
-
-
-async def _fal(model: str, prompt: str, aspect: float, quality: str) -> tuple[bytes, dict] | None:
-    if not (key := os.environ.get("FAL_API_KEY")):
-        log.info("FAL_API_KEY not set; skipping artwork")
-        return None
-
+async def _fal(
+    spec: ModelSpec, key: str, prompt: str, aspect: float, quality: str
+) -> tuple[bytes | str, dict] | Unavailable:
     import fal_client
     import httpx
 
-    app, size = FAL_APPS[model], fal_size(model, aspect, quality)
-    arguments = {"prompt": prompt, "output_format": "png", "sync_mode": True, **size}
-    if model == "nano-banana-pro":
-        arguments["num_images"] = 1
+    size = spec.arguments(aspect, quality)
+    # JPEG: the artwork is resampled and embedded as JPEG anyway, and it downloads
+    # several times smaller than PNG. The binary comes from fal's CDN rather than
+    # inline as base64 (sync_mode), which would inflate it by a third inside JSON.
+    arguments = {"prompt": prompt, "output_format": "jpeg", **size}
     # FAL_API_KEY is ours; the client on its own would only look for FAL_KEY.
     client = fal_client.AsyncClient(key=key, default_timeout=180.0)
     try:
-        result = await client.subscribe(app, arguments=arguments, client_timeout=180.0)
+        # A render takes tens of seconds; polling the queue every 0.1 s (the
+        # client's default) would be hundreds of status calls per cover.
+        result = await client.subscribe(
+            spec.app, arguments=arguments, interval=1.0, client_timeout=180.0
+        )
         image = result["images"][0]
         data = await _fetch(image["url"])
-    except (fal_client.FalClientError, httpx.HTTPError, KeyError, IndexError, TypeError, ValueError) as exc:
-        log.warning("image generation on %s failed (%s); falling back to a motif", app, exc)
-        return None
+    except (fal_client.FalClientError, httpx.HTTPError, LookupError, TypeError, ValueError) as exc:
+        return Unavailable(f"{spec.app} failed: {exc}")
     return data, {
         "provider": "fal",
-        "model": app,
+        "model": spec.app,
         "requested_size": size,
         "revised_prompt": image.get("description"),
         "seed": result.get("seed"),
     }
 
 
-async def _fetch(url: str) -> bytes:
-    """The image behind a fal result: inline with sync_mode, else on fal's CDN."""
+async def _fetch(url: str) -> bytes | str:
+    """The image behind a fal result: downloaded from the CDN, or the base64 of a
+    data URI, which ``_process`` decodes in its worker thread."""
     if url.startswith("data:"):
-        return base64.b64decode(url.split(",", 1)[1])
+        return url.partition(",")[2]
     import httpx
 
     async with httpx.AsyncClient(timeout=60.0) as http:
@@ -237,13 +262,18 @@ async def _fetch(url: str) -> bytes:
 
 
 def _process(
-    data: bytes,
+    data: bytes | str,
     target_w: int,
     target_h: int,
     treatment: Treatment,
     duotone_colours: tuple[str, str] | None,
 ) -> tuple[Image.Image, tuple[int, int]]:
-    """Decode, crop and tone the artwork. Returns it and its native size."""
+    """Decode, crop and tone the artwork. Returns it and its native size.
+
+    ``data`` is the image's bytes, or its base64 as the provider sent it.
+    """
+    if isinstance(data, str):
+        data = base64.b64decode(data)
     native = Image.open(io.BytesIO(data)).convert("RGB")
     art = cover_crop(native, target_w, target_h)
     if treatment == "grayscale":

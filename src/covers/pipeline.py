@@ -2,7 +2,7 @@
 
     text/title/author
         -> Claude writes the art direction and the image prompt
-        -> OpenAI paints the artwork (optional)
+        -> an image model (fal or OpenAI) paints the artwork (optional)
         -> the typography engine sets the type in German trade geometry
         -> front.png
 """
@@ -49,7 +49,7 @@ async def create_cover(
     director: str | None = None,
     treatment: str = "none",
     image_quality: str | None = None,
-    image_model: str = imagegen.DEFAULT_IMAGE_MODEL,
+    image_model: imagegen.ImageModel = imagegen.DEFAULT_IMAGE_MODEL,
     seed: int | None = None,
     marks: bool = False,
     brief: ArtDirection | None = None,
@@ -115,13 +115,12 @@ async def create_cover(
             duotone_colours=darkest_and_lightest(hexes),
             style=style,
             quality=image_quality,
-            model=image_model,  # type: ignore[arg-type]
+            model=image_model,
         )
-        if art is None:
+        if isinstance(art, imagegen.Unavailable):
             notes.append(
-                f"image generation with {image_model} unavailable (no "
-                f"{imagegen.key_for(image_model)} or the call failed); used a procedural "
-                "motif instead"
+                f"image generation with {image_model} unavailable ({art.reason}); used a "
+                "procedural motif instead"
             )
             if direction.motif == "none":
                 direction = direction.model_copy(

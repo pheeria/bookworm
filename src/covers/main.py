@@ -34,7 +34,7 @@ def create_app() -> FastAPI:
         version="0.1.0",
         summary="Print-ready front covers in German trade formats, from a text prompt.",
         description=(
-            "Claude writes the art direction, OpenAI paints the artwork, and the type is "
+            "Claude writes the art direction, an image model paints the artwork, and the type is "
             "set as outlined vectors in real German trade geometry, trim and bleed included."
         ),
     )

@@ -6,7 +6,7 @@ trade formats German literary publishers actually use.
 ```
 POST /generate  { text, title, author }
    -> Claude writes the art direction and the image prompt
-   -> OpenAI paints the artwork
+   -> an image model paints the artwork (Nano Banana Pro or FLUX.2 Pro on fal, or OpenAI)
    -> the typography engine sets the type in real trade geometry
    -> front.png
 ```
@@ -376,14 +376,15 @@ picks who paints the artwork; the type is set afterwards as vector either way.
 |---|---|---|---|
 | `nano-banana-pro` *(default)* | fal, `fal-ai/nano-banana-pro` | `FAL_API_KEY` | nearest of its aspect ratios; `resolution` 2K at `high` quality, else 1K |
 | `flux-2-pro` | fal, `fal-ai/flux-2-pro` | `FAL_API_KEY` | custom size at the placement's exact aspect, long edge 2048 at `high`, else 1024 |
-| `openai` | OpenAI, `COVERS_IMAGE_MODEL` | `OPENAI_API_KEY` | nearest of 1024x1536 / 1024x1024 / 1536x1024 |
+| `openai` | OpenAI, `COVERS_OPENAI_IMAGE_MODEL` | `OPENAI_API_KEY` | nearest of 1024x1536 / 1024x1024 / 1536x1024 |
 
 A book cover keeps its `image_model` in `options`; `regenerate` reuses it unless the
 body names another. `artwork.provider` and `artwork.model` report which one ran.
 
 Set via env: `COVERS_CLAUDE_MODEL` (default `claude-opus-5`),
 `COVERS_OPENAI_TEXT_MODEL` (default `gpt-5.4`) and
-`COVERS_IMAGE_MODEL` (default `gpt-image-2`; the installed SDK also accepts
+`COVERS_OPENAI_IMAGE_MODEL` (default `gpt-image-2`, for `image_model: openai`; the old name
+`COVERS_IMAGE_MODEL` still works; the installed SDK also accepts
 `gpt-image-2.5-sunburst`, `gpt-image-2.5-flare`, `gpt-image-1.5`, `gpt-image-1`).
 Artwork is generated once, for the front panel, and cover-cropped to the planned
 placement. The response reports the artwork's `effective_dpi` over that placement
