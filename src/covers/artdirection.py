@@ -47,7 +47,34 @@ TypeFamily = Literal[
     "garalde",
     "fraktur",
     "meta",
+    "cormorant",
+    "crimson",
+    "lora",
+    "source_serif",
+    "spectral",
+    "fraunces",
+    "dm_serif",
+    "caslon",
+    "alegreya",
+    "newsreader",
+    "young_serif",
+    "gloock",
+    "abril",
+    "montserrat",
+    "josefin",
+    "work_sans",
+    "inter",
+    "space_grotesk",
+    "syne",
+    "oswald",
+    "bebas",
+    "barlow_condensed",
+    "grenze_gotisch",
+    "cinzel",
 ]
+
+#: Blackletters: a title in their capitals is unreadable.
+_NO_CAPITALS = frozenset({"fraktur", "grenze_gotisch"})
 
 Motif = Literal["arcs", "blocks", "dots", "split", "waveform", "rings", "none"]
 MOTIFS: tuple[str, ...] = get_args(Motif)
@@ -131,7 +158,19 @@ class ArtDirection(BaseModel):
             "garalde is Garamond, the classic literary-fiction face of Suhrkamp, Insel "
             "and Hanser. fraktur is blackletter for the title, for fairy tales, legends "
             "and historical subjects; never set it in capitals. meta is Spiekermann's "
-            "humanist sans, contemporary and non-fiction in feel."
+            "humanist sans, contemporary and non-fiction in feel. "
+            "Serifs: cormorant (elegant display Garamond), crimson (a quiet book face), "
+            "lora (warm contemporary), source_serif (sober, for non-fiction), spectral "
+            "(literary, fine), fraunces (soft wonky Old Style, very current), dm_serif "
+            "(high-contrast display), caslon (Libre Caslon, classic English), alegreya "
+            "(lively calligraphic), newsreader (reportage and essays), young_serif (warm "
+            "and plump), gloock (bold high-contrast), abril (fat didone for titles). "
+            "Sans: montserrat (urban geometric), josefin (art-deco geometric), work_sans "
+            "(friendly grotesk), inter (neutral, precise), space_grotesk (quirky "
+            "contemporary), syne (expressive, fashion), oswald (condensed), bebas (tall "
+            "condensed capitals), barlow_condensed (DIN-like condensed). Other: "
+            "grenze_gotisch (modern blackletter, historical subjects; never in capitals), "
+            "cinzel (Roman inscriptional capitals, for myth and fantasy)."
         )
     )
     artwork: Artwork = Field(
@@ -175,7 +214,7 @@ class ArtDirection(BaseModel):
     def _no_blackletter_capitals(self) -> "ArtDirection":
         # Blackletter capitals are not meant to stand in a row; a title in them is
         # unreadable. Holds whoever chose the casing, model or caller.
-        if self.type_family == "fraktur" and self.title_case == "upper":
+        if self.type_family in _NO_CAPITALS and self.title_case == "upper":
             self.title_case = "title"
         return self
 
@@ -369,9 +408,16 @@ _FALLBACK_IMAGE_PROMPT = {
 }
 
 
+#: Sans display faces that suit a title in capitals.
+_UPPER = frozenset({
+    "geometric", "grotesk", "grotesk_condensed", "montserrat", "josefin", "work_sans",
+    "inter", "space_grotesk", "syne", "oswald", "bebas", "barlow_condensed",
+})
+
+
 def _title_case(family: str) -> str:
     """Uppercase suits the geometric and grotesk display faces; the rest set in title case."""
-    return "upper" if family in ("geometric", "grotesk", "grotesk_condensed") else "title"
+    return "upper" if family in _UPPER else "title"
 
 
 def _family_for(template: str, allowed: tuple[str, ...], seed: int) -> str:

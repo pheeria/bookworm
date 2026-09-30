@@ -40,7 +40,10 @@ MOODS: dict[str, Mood] = {
                 "menacing."
             ),
             templates=("picture",),
-            type_families=("humanist", "literary_serif", "garalde", "neoclassical"),
+            type_families=(
+                "humanist", "literary_serif", "garalde", "neoclassical", "cormorant",
+                "lora", "crimson", "alegreya", "young_serif", "josefin",
+            ),
             tones=("warm", "charmant", "romantisch", "zart", "intim", "heiter"),
         ),
         Mood(
@@ -53,7 +56,10 @@ MOODS: dict[str, Mood] = {
                 "explain it."
             ),
             templates=("picture",),
-            type_families=("grotesk", "grotesk_condensed", "geometric", "slab"),
+            type_families=(
+                "grotesk", "grotesk_condensed", "geometric", "slab", "oswald", "bebas",
+                "barlow_condensed", "montserrat", "work_sans", "gloock",
+            ),
             tones=("dunkel", "spannung", "krimi", "nächtlich", "hart", "kalt"),
         ),
         Mood(
@@ -66,7 +72,10 @@ MOODS: dict[str, Mood] = {
                 "and look like it belongs to now."
             ),
             templates=("picture",),
-            type_families=("meta", "geometric", "grotesk_condensed", "neoclassical"),
+            type_families=(
+                "meta", "geometric", "grotesk_condensed", "neoclassical", "fraunces",
+                "dm_serif", "syne", "space_grotesk", "abril", "josefin", "cinzel",
+            ),
             tones=("pop", "jung", "laut", "grell", "frisch", "traumhaft"),
         ),
         Mood(
@@ -79,7 +88,10 @@ MOODS: dict[str, Mood] = {
                 "Serious without being dull."
             ),
             templates=("picture",),
-            type_families=("garalde", "literary_serif", "didone", "grotesk", "meta"),
+            type_families=(
+                "garalde", "literary_serif", "didone", "grotesk", "meta", "source_serif",
+                "newsreader", "caslon", "spectral", "inter", "cormorant", "grenze_gotisch",
+            ),
             tones=("sachlich", "ernst", "literarisch", "klar", "essay", "politisch"),
         ),
     )

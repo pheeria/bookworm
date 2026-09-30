@@ -280,6 +280,33 @@ load time.
 | `garalde` | — | EB Garamond: the Garamond/Sabon register of Suhrkamp, Insel, Hanser |
 | `fraktur` | — | UnifrakturMaguntia titles over Garamond, for Märchen and the historical; never in capitals |
 | `meta` | — | Fira Sans, Spiekermann's open successor to FF Meta |
+| `cormorant` | — | Cormorant Garamond: elegant display Garamond |
+| `crimson` | — | Crimson Pro: quiet book face |
+| `lora` | — | Lora: warm contemporary serif |
+| `source_serif` | — | Source Serif 4: sober transitional, optical sizes |
+| `spectral` | — | Spectral: fine literary serif |
+| `fraunces` | — | Fraunces: soft, wonky Old Style |
+| `dm_serif` | — | DM Serif Display: high-contrast display |
+| `caslon` | — | Libre Caslon Display + Text: classic Caslon |
+| `alegreya` | — | Alegreya: lively calligraphic serif |
+| `newsreader` | — | Newsreader: reportage and essays |
+| `young_serif` | — | Young Serif: warm, plump |
+| `gloock` | — | Gloock: bold high-contrast serif |
+| `abril` | — | Abril Fatface titles over Lora: fat didone |
+| `montserrat` | — | Montserrat: urban geometric sans |
+| `josefin` | — | Josefin Sans: art-deco geometric |
+| `work_sans` | — | Work Sans: friendly grotesk |
+| `inter` | — | Inter: neutral, precise |
+| `space_grotesk` | — | Space Grotesk: quirky contemporary |
+| `syne` | — | Syne: expressive, very wide at display weight |
+| `oswald` | — | Oswald: condensed gothic |
+| `bebas` | — | Bebas Neue titles over Oswald: tall condensed capitals |
+| `barlow_condensed` | — | Barlow Condensed: DIN-like condensed |
+| `grenze_gotisch` | — | Grenze Gotisch: modern blackletter; never in capitals |
+| `cinzel` | — | Cinzel: Roman inscriptional capitals; myth, fantasy |
+
+Every open face covers German -- umlauts, ß, dashes, »« and „“ -- and the reader
+types each draw on several of them (see `covers/moods.py`).
 
 So a cover made on a Mac and the same cover from the deployed service differ in
 face, and with it in line breaks and type size, since both are fitted to the
