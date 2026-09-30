@@ -99,9 +99,8 @@ are not in the URI. The database is `MONGODB_DB` (default `bookworm`), the colle
 `slug` and `isbn`.
 
 On start the API creates the indexes, and seeds an empty collection from
-`src/books/seed.json`, an export of `../recover/books.ts`
-(`node scripts/export_books_ts.mjs`). After that the collection is the source of
-truth; re-exporting does not touch a collection that already has books.
+`src/books/seed.json`. After that the collection is the source of truth; editing
+the seed does not touch a collection that already has books.
 
 Tests run against `mongomock` in memory and never reach a real cluster.
 

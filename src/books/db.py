@@ -19,14 +19,23 @@ import re
 from datetime import UTC, datetime
 from pathlib import Path
 
-from pymongo import ASCENDING, MongoClient
+from fastapi import Request
+from pymongo import IndexModel, MongoClient
 from pymongo.collection import Collection
 
 from .models import Book
 
 SEED = Path(__file__).with_name("seed.json")
 
-_collection: Collection | None = None
+_INDEXES = [
+    IndexModel("slug", unique=True),
+    IndexModel("isbn", unique=True),
+    IndexModel("publisher"),
+    IndexModel("category"),
+    IndexModel("format"),
+]
+# Books as the API returns them: without the driver's _id or our timestamps.
+_PROJECTION = {"_id": 0, "created_at": 0, "updated_at": 0}
 
 
 def connect() -> MongoClient:
@@ -41,31 +50,26 @@ def connect() -> MongoClient:
     return MongoClient(uri, appname="bookworm", tz_aware=True, **credentials)
 
 
-def init(client: MongoClient) -> None:
-    """Point the API at ``client``, create indexes, and seed an empty collection."""
-    global _collection
-    _collection = client[os.environ.get("MONGODB_DB", "bookworm")]["books"]
-    _collection.create_index("slug", unique=True)
-    _collection.create_index("isbn", unique=True)
-    for field in ("publisher", "category", "format"):
-        _collection.create_index([(field, ASCENDING)])
-    if _collection.estimated_document_count() == 0:
+def init(client: MongoClient) -> Collection:
+    """Return the books collection, indexed, with an empty one seeded."""
+    books = client[os.environ.get("MONGODB_DB", "bookworm")]["books"]
+    books.create_indexes(_INDEXES)  # one round trip; a no-op once they exist
+    if books.estimated_document_count() == 0:
         now = datetime.now(UTC)
-        _collection.insert_many(
-            {**Book.model_validate(raw).model_dump(), "created_at": now, "updated_at": now}
+        books.insert_many(
+            _document(Book.model_validate(raw), created_at=now, updated_at=now)
             for raw in json.loads(SEED.read_text(encoding="utf-8"))
         )
+    return books
 
 
-def get_db() -> Collection:
-    """FastAPI dependency: the books collection. The client pools connections itself."""
-    if _collection is None:
-        raise RuntimeError("books.db.init() has not been called")
-    return _collection
+def get_db(request: Request) -> Collection:
+    """FastAPI dependency: the collection the app's lifespan stored on its state."""
+    return request.app.state.books
 
 
-def _book(doc: dict) -> Book:
-    return Book.model_validate({key: doc[key] for key in Book.model_fields})
+def _document(book: Book, **timestamps: datetime) -> dict:
+    return {**book.model_dump(), **timestamps}
 
 
 def list_books(
@@ -87,26 +91,29 @@ def list_books(
         pattern = {"$regex": re.escape(q), "$options": "i"}
         query["$or"] = [{field: pattern} for field in ("title", "author", "subtitle")]
 
-    total = books.count_documents(query)
-    docs = books.find(query).sort("_id", ASCENDING).skip(offset).limit(limit)
-    return [_book(d) for d in docs], total
+    cursor = books.find(query, _PROJECTION).sort("_id").skip(offset).limit(limit)
+    items = [Book.model_validate(d) for d in cursor.batch_size(limit)]
+    # A short, non-empty page (or an empty first page) already tells us the total.
+    if 0 < len(items) < limit or (not items and offset == 0):
+        return items, offset + len(items)
+    return items, books.count_documents(query)
 
 
 def get_book(books: Collection, slug: str) -> Book | None:
-    doc = books.find_one({"slug": slug})
-    return _book(doc) if doc else None
+    doc = books.find_one({"slug": slug}, _PROJECTION)
+    return Book.model_validate(doc) if doc else None
 
 
 def insert(books: Collection, book: Book) -> None:
     """Raises pymongo.errors.DuplicateKeyError on a duplicate slug or ISBN."""
     now = datetime.now(UTC)
-    books.insert_one({**book.model_dump(), "created_at": now, "updated_at": now})
+    books.insert_one(_document(book, created_at=now, updated_at=now))
 
 
 def replace(books: Collection, slug: str, book: Book) -> bool:
     """Replace the book at ``slug``. False if there is none; DuplicateKeyError on a clash."""
     result = books.update_one(
-        {"slug": slug}, {"$set": {**book.model_dump(), "updated_at": datetime.now(UTC)}}
+        {"slug": slug}, {"$set": _document(book, updated_at=datetime.now(UTC))}
     )
     return result.matched_count > 0
 

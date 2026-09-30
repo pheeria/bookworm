@@ -8,15 +8,14 @@ import pytest
 from fastapi.testclient import TestClient
 
 from books.db import SEED
-from bookworm.main import app
+from bookworm.main import create_app
 
 SEEDED = json.loads(SEED.read_text(encoding="utf-8"))
 
 
 @pytest.fixture
-def client(monkeypatch) -> TestClient:
-    monkeypatch.setattr("books.db.connect", mongomock.MongoClient)
-    with TestClient(app) as c:  # the lifespan indexes and seeds the collection
+def client() -> TestClient:
+    with TestClient(create_app(mongomock.MongoClient)) as c:  # lifespan seeds it
         yield c
 
 
@@ -37,7 +36,7 @@ def test_seeded_from_books_ts(client):
 def test_seeding_is_idempotent(client):
     from books import db
 
-    db.init(db.get_db().database.client)
+    db.init(client.app.state.books.database.client)
     assert client.get("/books").json()["total"] == 25
 
 

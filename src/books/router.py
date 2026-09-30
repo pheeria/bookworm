@@ -22,8 +22,7 @@ Books = Annotated[Collection, Depends(db.get_db)]
 
 
 def _conflict(exc: DuplicateKeyError) -> HTTPException:
-    key = (exc.details or {}).get("keyPattern") or {}
-    field = "isbn" if "isbn" in key or "isbn_1" in str(exc) else "slug"
+    field = "isbn" if "isbn" in (exc.details or {}).get("keyPattern", {}) else "slug"
     return HTTPException(status.HTTP_409_CONFLICT, f"a book with this {field} already exists")
 
 
