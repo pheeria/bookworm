@@ -61,6 +61,7 @@ async def test_generate_crops_to_the_requested_pixels(stub_openai):
         ("#101A2C", "#EDE7DA"),
         target_w_px=1500,
         target_h_px=900,
+        model="openai",
         treatment="none",
     )
     assert art is not None
@@ -77,6 +78,7 @@ async def test_duotone_treatment_pulls_the_artwork_into_the_palette(stub_openai)
         ("#101A2C", "#EDE7DA", "#C9A44C", "#26364F"),
         target_w_px=200,
         target_h_px=300,
+        model="openai",
         treatment="duotone",
         duotone_colours=("#101A2C", "#EDE7DA"),
     )
@@ -130,7 +132,7 @@ def test_palette_is_held_loosely_for_illustrated_covers(style, expected):
 async def test_missing_key_degrades_instead_of_raising(monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     art = await imagegen.generate(
-        "Fog", ("#000000",), target_w_px=100, target_h_px=100
+        "Fog", ("#000000",), target_w_px=100, target_h_px=100, model="openai"
     )
     assert art is None
 
@@ -147,7 +149,7 @@ async def test_api_failure_degrades_instead_of_raising(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     monkeypatch.setattr("openai.AsyncOpenAI", lambda **_kw: _Boom())
     art = await imagegen.generate(
-        "Fog", ("#000000",), target_w_px=100, target_h_px=100
+        "Fog", ("#000000",), target_w_px=100, target_h_px=100, model="openai"
     )
     assert art is None
 
@@ -167,6 +169,7 @@ async def test_artwork_is_embedded_in_the_cover_and_reported(stub_openai, monkey
     monkeypatch.setattr(render, "build_front", spy)
 
     result = await create_cover(
+        image_model="openai",
         text="Ein Märchen aus dem Wald.",
         title="Der Wald",
         author="Brüder Grimm",
@@ -200,6 +203,7 @@ async def test_artwork_is_embedded_in_the_cover_and_reported(stub_openai, monkey
 
 async def test_upscaling_is_disclosed_in_the_notes(stub_openai):
     result = await create_cover(
+        image_model="openai",
         text="Ein Märchen.",
         title="Der Wald",
         author="Brüder Grimm",
@@ -285,6 +289,7 @@ def test_direct_path_builds_a_prompt_from_the_book_text(style):
 
 async def test_none_director_makes_no_text_model_call(stub_openai):
     result = await create_cover(
+        image_model="openai",
         text="Zwei Schwestern erben das Haus ihrer Großmutter am Hafen.",
         title="Das Haus am Hafen", author="Jonas Wiechert", director="none", style="illustrated",
     )
@@ -297,8 +302,124 @@ async def test_none_director_makes_no_text_model_call(stub_openai):
 
 async def test_image_quality_is_forwarded_and_reported(stub_openai):
     result = await create_cover(
+        image_model="openai",
         text="Ein Haus am Hafen.", title="Das Haus", author="J. W.", director="none", image_quality="low",
         artwork="generated", template="illustrated_full",
     )
     assert stub_openai["quality"] == "low"
     assert result["artwork"]["quality"] == "low"
+
+
+# --- fal: Nano Banana Pro and FLUX.2 Pro ---
+
+
+def _png_data_uri(size=(512, 768), colour=(40, 60, 90)) -> str:
+    buf = io.BytesIO()
+    Image.new("RGB", size, colour).save(buf, format="PNG")
+    return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+@pytest.fixture
+def stub_fal(monkeypatch):
+    """Stand in for fal_client.AsyncClient; record what it was asked."""
+    recorder: dict = {}
+
+    class _Client:
+        def __init__(self, key=None, default_timeout=120.0):
+            recorder["key"] = key
+
+        async def subscribe(self, application, arguments, **kw):
+            recorder["app"], recorder["arguments"] = application, arguments
+            if recorder.get("fail"):
+                import fal_client
+
+                raise fal_client.FalClientHTTPError("boom", 500, {}, None)
+            return {"images": [{"url": recorder.get("url") or _png_data_uri(),
+                                "description": "a door"}], "seed": 7}
+
+    monkeypatch.setenv("FAL_API_KEY", "fal-test-key")
+    monkeypatch.setattr("fal_client.AsyncClient", _Client)
+    return recorder
+
+
+def test_nano_banana_is_the_default_model():
+    from covers.models import CoverRequest
+
+    assert CoverRequest(text="x", title="x", author="x").image_model == "nano-banana-pro"
+
+
+@pytest.mark.parametrize(("model", "app"), [
+    ("nano-banana-pro", "fal-ai/nano-banana-pro"), ("flux-2-pro", "fal-ai/flux-2-pro"),
+])
+async def test_fal_models_paint_the_artwork(stub_fal, model, app):
+    art = await imagegen.generate(
+        "A red door in fog", ("#101A2C", "#EDE7DA"),
+        target_w_px=400, target_h_px=600, quality="high", model=model,
+    )
+    assert art is not None and art.image.size == (400, 600)  # cropped to the placement
+    assert stub_fal["key"] == "fal-test-key"  # from FAL_API_KEY, passed explicitly
+    assert stub_fal["app"] == app
+    args = stub_fal["arguments"]
+    assert args["output_format"] == "png" and args["sync_mode"] is True
+    assert "no text" in args["prompt"].lower()  # the lettering guards still apply
+    assert art.meta["provider"] == "fal" and art.meta["model"] == app
+    assert art.meta["native_px"] == [512, 768]
+
+
+async def test_nano_banana_gets_the_nearest_ratio_and_a_resolution(stub_fal):
+    await imagegen.generate("x", ("#000000",), target_w_px=1594, target_h_px=2480,
+                            quality="low", model="nano-banana-pro")
+    assert stub_fal["arguments"]["aspect_ratio"] == "2:3"
+    assert stub_fal["arguments"]["resolution"] == "1K"
+
+
+async def test_flux_gets_the_placements_exact_aspect(stub_fal):
+    await imagegen.generate("x", ("#000000",), target_w_px=1594, target_h_px=2480,
+                            quality="high", model="flux-2-pro")
+    size = stub_fal["arguments"]["image_size"]
+    assert size["height"] == 2048 and size["width"] % 16 == 0
+    assert abs(size["width"] / size["height"] - 1594 / 2480) < 0.01
+
+
+async def test_a_fal_url_result_is_downloaded(stub_fal, monkeypatch):
+    stub_fal["url"] = "https://fal.media/files/cover.png"
+    png = base64.b64decode(_png_data_uri().split(",", 1)[1])
+
+    class _Response:
+        content = png
+
+        def raise_for_status(self):
+            pass
+
+    class _Http:
+        def __init__(self, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            pass
+
+        async def get(self, url):
+            stub_fal["fetched"] = url
+            return _Response()
+
+    monkeypatch.setattr("httpx.AsyncClient", _Http)
+    art = await imagegen.generate("x", ("#000000",), target_w_px=100, target_h_px=150)
+    assert art is not None and stub_fal["fetched"] == "https://fal.media/files/cover.png"
+
+
+async def test_fal_failure_or_no_key_falls_back(stub_fal, monkeypatch):
+    stub_fal["fail"] = True
+    assert await imagegen.generate("x", ("#000000",), target_w_px=100, target_h_px=150) is None
+    monkeypatch.delenv("FAL_API_KEY")
+    assert await imagegen.generate("x", ("#000000",), target_w_px=100, target_h_px=150) is None
+
+
+async def test_the_cover_note_names_the_missing_key():
+    result = await create_cover(
+        text="Ein Haus.", title="Das Haus", author="J. W.", director="none",
+        artwork="generated", template="illustrated_full", image_model="flux-2-pro",
+    )
+    assert any("flux-2-pro" in n and "FAL_API_KEY" in n for n in result["notes"])

@@ -51,6 +51,7 @@ def healthz() -> dict:
         "status": "ok",
         "anthropic_key": bool(os.environ.get("ANTHROPIC_API_KEY")),
         "openai_key": bool(os.environ.get("OPENAI_API_KEY")),
+        "fal_key": bool(os.environ.get("FAL_API_KEY")),
         "output_dir": str(settings.output_dir()),
     }
 

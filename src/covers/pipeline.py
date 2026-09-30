@@ -49,6 +49,7 @@ async def create_cover(
     director: str | None = None,
     treatment: str = "none",
     image_quality: str | None = None,
+    image_model: str = imagegen.DEFAULT_IMAGE_MODEL,
     seed: int | None = None,
     marks: bool = False,
     brief: ArtDirection | None = None,
@@ -114,11 +115,13 @@ async def create_cover(
             duotone_colours=darkest_and_lightest(hexes),
             style=style,
             quality=image_quality,
+            model=image_model,  # type: ignore[arg-type]
         )
         if art is None:
             notes.append(
-                "image generation unavailable (no OPENAI_API_KEY or the call failed); "
-                "used a procedural motif instead"
+                f"image generation with {image_model} unavailable (no "
+                f"{imagegen.key_for(image_model)} or the call failed); used a procedural "
+                "motif instead"
             )
             if direction.motif == "none":
                 direction = direction.model_copy(

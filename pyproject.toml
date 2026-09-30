@@ -17,6 +17,7 @@ dependencies = [
     "openai>=3.20.0",
     "pymongo>=4.10",
     "python-multipart>=0.0.20",
+    "fal-client>=1.0",
 ]
 
 [project.optional-dependencies]

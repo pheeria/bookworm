@@ -68,7 +68,7 @@ missing key never turns into a 500:
 | Missing | What happens |
 |---|---|
 | `ANTHROPIC_API_KEY` | A deterministic brief is derived from a hash of the input: palette, layout, typeface and genre line are chosen from the built-in catalogue. `art_direction_meta.source` reports `fallback`. |
-| `OPENAI_API_KEY` | The cover renders with a procedural vector motif instead of painted artwork, and says so in `notes`. |
+| `FAL_API_KEY` / `OPENAI_API_KEY` | Whichever the chosen image model needs (see Models). Without it the cover renders with a procedural vector motif instead of painted artwork, and `notes` names the missing key. |
 
 Everything else — geometry, typesetting, rasterising — is local and deterministic.
 
@@ -368,6 +368,18 @@ chosen for the book, and the Gattungsbezeichnung is a keyword guess. Worth it fo
 not for a cover going to press.
 
 ## Models
+
+**Image models.** `image_model` on the request (on `/generate` and on book covers)
+picks who paints the artwork; the type is set afterwards as vector either way.
+
+| `image_model` | Runs on | Key | Size |
+|---|---|---|---|
+| `nano-banana-pro` *(default)* | fal, `fal-ai/nano-banana-pro` | `FAL_API_KEY` | nearest of its aspect ratios; `resolution` 2K at `high` quality, else 1K |
+| `flux-2-pro` | fal, `fal-ai/flux-2-pro` | `FAL_API_KEY` | custom size at the placement's exact aspect, long edge 2048 at `high`, else 1024 |
+| `openai` | OpenAI, `COVERS_IMAGE_MODEL` | `OPENAI_API_KEY` | nearest of 1024x1536 / 1024x1024 / 1536x1024 |
+
+A book cover keeps its `image_model` in `options`; `regenerate` reuses it unless the
+body names another. `artwork.provider` and `artwork.model` report which one ran.
 
 Set via env: `COVERS_CLAUDE_MODEL` (default `claude-opus-5`),
 `COVERS_OPENAI_TEXT_MODEL` (default `gpt-5.4`) and

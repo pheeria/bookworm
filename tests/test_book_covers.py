@@ -329,3 +329,23 @@ def test_the_schema_tells_generated_and_uploaded_covers_apart(client):
     generated, uploaded = schemas["GeneratedBookCover"], schemas["UploadedBookCover"]
     assert {"art_direction", "geometry", "request", "seed"} <= set(generated["required"])
     assert "art_direction" not in uploaded["properties"]
+
+
+def test_the_image_model_is_chosen_and_kept(client):
+    cover = create(client, image_model="flux-2-pro")
+    assert cover["request"]["image_model"] == "flux-2-pro"
+    assert cover["options"] == {"image_model": "flux-2-pro"}
+    # No FAL_API_KEY in tests: the note names the model and its key.
+    assert any("flux-2-pro" in n and "FAL_API_KEY" in n for n in cover["notes"])
+
+    again = client.post(f"/books/{SLUG}/covers/{cover['id']}/regenerate").json()
+    assert again["request"]["image_model"] == "flux-2-pro"
+    switched = client.post(
+        f"/books/{SLUG}/covers/{cover['id']}/regenerate", json={"image_model": "openai"}
+    ).json()
+    assert switched["request"]["image_model"] == "openai"
+
+
+def test_nano_banana_is_the_default_for_book_covers(client):
+    assert create(client)["request"]["image_model"] == "nano-banana-pro"
+    assert client.post(f"/books/{SLUG}/covers", json={"type": "heart", "image_model": "dall-e"}).status_code == 422

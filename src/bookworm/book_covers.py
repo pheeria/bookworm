@@ -60,6 +60,7 @@ from books.models import Book, BookTheme, Color, GeneratedCover, ReaderType
 from books.router import not_found
 from covers import concepts as covers_concepts
 from covers import core as covers_core
+from covers.imagegen import DEFAULT_IMAGE_MODEL, ImageModel
 from covers.models import CoverRequest, CoverResult
 from covers.moods import MOODS
 from covers.palettes import luminance, rgb
@@ -82,6 +83,10 @@ Status = Literal["draft", "published"]
 
 class BookCoverRequest(BaseModel):
     type: ReaderType = Field(description="Who the cover is for; decides its mood and faces.")
+    image_model: ImageModel = Field(
+        default=DEFAULT_IMAGE_MODEL,
+        description="Who paints the artwork: nano-banana-pro, flux-2-pro (both on fal) or openai.",
+    )
     text: str | None = Field(
         default=None, min_length=1,
         description="The brief the cover is derived from. Defaults to the book's blurb.",
@@ -90,6 +95,7 @@ class BookCoverRequest(BaseModel):
 
 class RegenerateRequest(BookCoverRequest):
     type: ReaderType | None = Field(default=None, description="Defaults to the cover's own.")
+    image_model: ImageModel | None = Field(default=None, description="Defaults to the cover's own.")
     concept: int | None = Field(
         default=None, ge=0, le=2,
         description="Render one of the cover's stored concepts (0 is the main one) instead of new ones.",
@@ -470,10 +476,10 @@ async def regenerate_book_cover(
     # A stored concept belongs to the type it was written for.
     if body.concept is not None and (type != old["type"] or not old.get("concepts")):
         raise HTTPException(422, "this cover has no stored concepts for that type; regenerate without `concept`")
-    # Only the brief text carries over: covers made before the manual options went
-    # may still store them, and they must not come back through the stored copy.
-    options = {k: v for k, v in old["options"].items() if k == "text"}
-    options |= body.model_dump(exclude_unset=True, exclude={"type"})
+    # Only the brief text and the image model carry over: covers made before the
+    # manual options went may still store others, which must not come back.
+    options = {k: v for k, v in old["options"].items() if k in ("text", "image_model")}
+    options |= body.model_dump(exclude_unset=True, exclude_none=True, exclude={"type", "concept"})
     # The new image is stored before the old one goes, so a failed render
     # leaves the cover as it was.
     reuse = old.get("concepts") if body.concept is not None else None

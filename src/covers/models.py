@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 
 from .artdirection import STYLES, Artwork, Motif, Template, TypeFamily
 from .formats import DEFAULT_FORMAT, FORMATS
-from .imagegen import Quality, Treatment
+from .imagegen import DEFAULT_IMAGE_MODEL, ImageModel, Quality, Treatment
 from .moods import MoodKey
 from .palettes import PALETTE_KEYS
 
@@ -68,6 +68,14 @@ class CoverRequest(BaseModel):
             "genre line the brief would have decided. The brief is a small part of "
             "the wall clock, so this is a provider choice, not a speed one -- see "
             "image_quality."
+        ),
+    )
+    image_model: ImageModel = Field(
+        default=DEFAULT_IMAGE_MODEL,
+        description=(
+            "Who paints the artwork. nano-banana-pro and flux-2-pro run on fal "
+            "(FAL_API_KEY); openai is COVERS_IMAGE_MODEL, gpt-image-2 by default "
+            "(OPENAI_API_KEY). The type is set afterwards either way."
         ),
     )
     image_quality: Quality | None = Field(
