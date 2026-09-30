@@ -2,29 +2,25 @@
 
     uv run uvicorn bookworm.main:app --reload
 
-This module owns the process: it loads ``.env``, configures CORS and connects
-the books API to MongoDB. ``books`` and ``covers`` stay libraries; the covers made
+This module owns the process: it loads ``.env``, configures logging and CORS, and
+connects the books API to MongoDB. ``books`` and ``covers`` stay libraries; the covers made
 for books (:mod:`bookworm.book_covers`) are the one place they meet.
 """
 
+import logging
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from dotenv import load_dotenv
-
-# Before importing covers: it reads its settings at import time.
-load_dotenv(Path(__file__).resolve().parents[2] / ".env")
-
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.routing import APIRoute
 from pymongo import MongoClient
 
 import books
+import covers.api
 from books import db as books_db
-from covers.main import app as covers_app
-from covers.main import cors_origins
+from covers import settings as covers_settings
 
 from . import book_covers, cover_store
 
@@ -49,17 +45,20 @@ def create_app(client_factory: Callable[[], MongoClient] = books_db.connect) -> 
 
     app.include_router(books.router)
     app.include_router(book_covers.router)
-    # Take the covers endpoints but not the covers app's own /docs and /openapi.json.
-    app.router.routes.extend(r for r in covers_app.routes if isinstance(r, APIRoute))
+    app.include_router(covers.api.router)
 
     # covers' origin policy, plus the methods the books API writes with.
     app.add_middleware(
         CORSMiddleware,
         allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["Content-Type"],
-        **cors_origins(),
+        **covers.api.cors_origins(),
     )
     return app
 
 
+# Loaded here, for the served app only. Tests build their own with create_app()
+# after conftest has cleared the provider keys, and must not get them back.
+load_dotenv(Path(__file__).resolve().parents[2] / ".env")
+logging.basicConfig(level=covers_settings.log_level())
 app = create_app()

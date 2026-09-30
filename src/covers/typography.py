@@ -120,8 +120,6 @@ class MissingFontError(RuntimeError):
 
 class Face:
     def __init__(self, path: str, index: int) -> None:
-        self.path = path
-        self.index = index
         blob = hb.Blob.from_file_path(path)
         self._hb_face = hb.Face(blob, index)
         self._hb_font = hb.Font(self._hb_face)
@@ -200,21 +198,19 @@ def _face(path: str, index: int) -> Face:
 @lru_cache(maxsize=256)
 def face(family: str, weight: str = "display") -> Face:
     """Resolve a logical family and weight to a loaded face, with fallbacks."""
-    order = [family] + [f for f in FAMILY_FALLBACK if f != family]
-    for fam in order:
-        specs = FAMILIES.get(fam)
-        if not specs:
-            continue
-        for w in (weight, "bold", "regular", "display"):
-            spec = specs.get(w)
-            if not spec:
+    families = [family] + [f for f in FAMILY_FALLBACK if f != family]
+    candidates = (
+        spec
+        for fam in families
+        for w in (weight, "bold", "regular", "display")
+        if (spec := FAMILIES.get(fam, {}).get(w))
+    )
+    for spec in candidates:
+        if path := _find(spec.file):
+            try:
+                return _face(path, spec.index)
+            except Exception:
                 continue
-            path = _find(spec.file)
-            if path:
-                try:
-                    return _face(path, spec.index)
-                except Exception:
-                    continue
     raise MissingFontError(
         "no usable typeface found; install the macOS supplemental fonts or drop "
         "TTF/OTF files into src/covers/fonts/"

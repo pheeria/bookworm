@@ -7,7 +7,6 @@ same database, because a deployed instance's disk does not outlive a deploy.
 """
 
 from datetime import UTC, datetime
-from pathlib import Path
 
 import gridfs
 from bson import ObjectId
@@ -52,12 +51,13 @@ def update(covers: Collection, book_id: ObjectId, cover_id: str, fields: dict) -
     )
 
 
-def delete(covers: Collection, book_id: ObjectId, cover_id: str) -> bool:
-    return covers.delete_one({"id": cover_id, "book_id": book_id}).deleted_count > 0
+def delete(covers: Collection, book_id: ObjectId, cover_id: str) -> dict | None:
+    """Delete and return the cover, or None if there is none."""
+    return covers.find_one_and_delete({"id": cover_id, "book_id": book_id})
 
 
-def put_image(images: gridfs.GridFS, cover_id: str, path: Path) -> ObjectId:
-    return images.put(path.read_bytes(), filename=f"{cover_id}.png", content_type="image/png")
+def put_image(images: gridfs.GridFS, cover_id: str, png: bytes) -> ObjectId:
+    return images.put(png, filename=f"{cover_id}.png", content_type="image/png")
 
 
 def read_image(images: gridfs.GridFS, image_id: ObjectId) -> bytes | None:

@@ -26,7 +26,7 @@ def _conflict(exc: DuplicateKeyError) -> HTTPException:
     return HTTPException(status.HTTP_409_CONFLICT, f"a book with this {field} already exists")
 
 
-def _not_found(slug: str) -> HTTPException:
+def not_found(slug: str) -> HTTPException:
     return HTTPException(status.HTTP_404_NOT_FOUND, f"no book {slug!r}")
 
 
@@ -51,7 +51,7 @@ def list_books(
 def get_book(slug: str, books: Books) -> Book:
     book = db.get_book(books, slug)
     if book is None:
-        raise _not_found(slug)
+        raise not_found(slug)
     return book
 
 
@@ -70,7 +70,7 @@ def replace_book(slug: str, book: Book, books: Books) -> Book:
     except DuplicateKeyError as exc:
         raise _conflict(exc) from exc
     if stored is None:
-        raise _not_found(slug)
+        raise not_found(slug)
     return stored
 
 
@@ -78,4 +78,4 @@ def replace_book(slug: str, book: Book, books: Books) -> Book:
 def delete_book(slug: str, books: Books) -> None:
     found = db.delete(books, slug)
     if not found:
-        raise _not_found(slug)
+        raise not_found(slug)

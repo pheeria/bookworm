@@ -152,7 +152,7 @@ async def test_api_failure_degrades_instead_of_raising(monkeypatch):
     assert art is None
 
 
-async def test_artwork_is_embedded_in_the_cover_and_reported(tmp_path, stub_openai, monkeypatch):
+async def test_artwork_is_embedded_in_the_cover_and_reported(stub_openai, monkeypatch):
     from covers import render
     from covers.artdirection import ArtDirection
 
@@ -170,13 +170,12 @@ async def test_artwork_is_embedded_in_the_cover_and_reported(tmp_path, stub_open
         text="Ein Märchen aus dem Wald.",
         title="Der Wald",
         author="Brüder Grimm",
-        outdir=tmp_path,
-        format_key="rowohlt_hardcover",
+        format="rowohlt_hardcover",
         template="photo_duotone",
         palette="nachtblau",
         artwork="generated",
     )
-    assert (tmp_path / "front.png").is_file()
+    assert result["png"][:8] == b"\x89PNG\r\n\x1a\n"
     svg = fronts[-1]
     assert "<image" in svg
     assert "data:image/jpeg;base64," in svg
@@ -199,13 +198,12 @@ async def test_artwork_is_embedded_in_the_cover_and_reported(tmp_path, stub_open
     assert meta["effective_dpi"] == imagegen.effective_dpi(1536, plan[3])
 
 
-async def test_upscaling_is_disclosed_in_the_notes(tmp_path, stub_openai):
+async def test_upscaling_is_disclosed_in_the_notes(stub_openai):
     result = await create_cover(
         text="Ein Märchen.",
         title="Der Wald",
         author="Brüder Grimm",
-        outdir=tmp_path,
-        format_key="grossformat_hardcover",
+        format="grossformat_hardcover",
         dpi=300,
         template="photo_duotone",
         artwork="generated",
@@ -278,11 +276,10 @@ def test_direct_path_builds_a_prompt_from_the_book_text(style):
     assert len(prompt) <= len(_DIRECT_PREAMBLE[style]) + DIRECT_TEXT_CHARS + 1
 
 
-async def test_none_director_makes_no_text_model_call(tmp_path, stub_openai):
+async def test_none_director_makes_no_text_model_call(stub_openai):
     result = await create_cover(
         text="Zwei Schwestern erben das Haus ihrer Großmutter am Hafen.",
-        title="Das Haus am Hafen", author="Jonas Wiechert",
-        outdir=tmp_path, director="none", style="illustrated",
+        title="Das Haus am Hafen", author="Jonas Wiechert", director="none", style="illustrated",
     )
     assert result["art_direction_meta"]["source"] == "none"
     assert result["director"] == "none"
@@ -291,10 +288,9 @@ async def test_none_director_makes_no_text_model_call(tmp_path, stub_openai):
     assert "Zwei Schwestern" in stub_openai["prompt"]
 
 
-async def test_image_quality_is_forwarded_and_reported(tmp_path, stub_openai):
+async def test_image_quality_is_forwarded_and_reported(stub_openai):
     result = await create_cover(
-        text="Ein Haus am Hafen.", title="Das Haus", author="J. W.",
-        outdir=tmp_path, director="none", image_quality="low",
+        text="Ein Haus am Hafen.", title="Das Haus", author="J. W.", director="none", image_quality="low",
         artwork="generated", template="illustrated_full",
     )
     assert stub_openai["quality"] == "low"

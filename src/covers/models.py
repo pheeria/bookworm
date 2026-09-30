@@ -2,13 +2,15 @@
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, Field
 
 from .artdirection import MOTIFS, STYLES, TEMPLATES, Artwork
 from .formats import DEFAULT_FORMAT, FORMATS
 from .imagegen import Quality, Treatment
 from .palettes import PALETTE_KEYS
 from .typography import TYPE_FAMILIES
+
+FormatKey = Literal[tuple(FORMATS)]  # type: ignore[valid-type]
 
 
 class CoverRequest(BaseModel):
@@ -19,16 +21,11 @@ class CoverRequest(BaseModel):
     any part of the art direction the model would otherwise choose.
     """
 
-    model_config = ConfigDict(populate_by_name=True)
-
     text: str = Field(min_length=1, description="The prompt the cover is derived from.")
     title: str = Field(min_length=1)
     author: str = Field(min_length=1)
 
-    format: str = Field(
-        default=DEFAULT_FORMAT,
-        description=f"Trade format. One of: {', '.join(sorted(FORMATS))}.",
-    )
+    format: FormatKey = Field(default=DEFAULT_FORMAT, description="Trade format.")
     dpi: int = Field(default=300, ge=72, le=900)
 
     imprint: str | None = Field(
@@ -59,9 +56,9 @@ class CoverRequest(BaseModel):
             "Who writes the brief. 'claude' and 'openai' both produce the same "
             "structured brief; 'none' skips the text model entirely and composes "
             "the image prompt locally from your text, giving up the palette and "
-            "genre line the brief would have decided. The brief is "
-            "~9s of a ~144s cover, so this is a provider choice, not a speed one -- "
-            "see image_quality."
+            "genre line the brief would have decided. The brief is a small part of "
+            "the wall clock, so this is a provider choice, not a speed one -- see "
+            "image_quality."
         ),
     )
     image_quality: Quality | None = Field(
@@ -82,7 +79,8 @@ class CoverRequest(BaseModel):
     )
 
     # --- output ------------------------------------------------------------
-    seed: int | None = Field(default=None, description="Pin the procedural motif.")
+    # Bounded to a signed 64-bit int so a pinned seed can be stored in BSON.
+    seed: int | None = Field(default=None, ge=0, lt=2**63, description="Pin the procedural motif.")
     marks: bool = Field(default=False, description="Draw the trim box for proofing.")
 
 
@@ -108,9 +106,9 @@ class CopySuggestions(BaseModel):
     genre_line: CopySuggestion
 
 
-class CoverResponse(BaseModel):
-    id: str
-    image: str = Field(description="URL of the front cover PNG.")
+class CoverResult(BaseModel):
+    """What ``create_cover`` reports about a cover, besides the PNG itself."""
+
     art_direction: dict[str, Any]
     art_direction_meta: dict[str, Any]
     artwork: dict[str, Any] | None
@@ -125,6 +123,11 @@ class CoverResponse(BaseModel):
     notes: list[str] = Field(
         description="Anything the renderer had to work around, in plain language."
     )
+
+
+class CoverResponse(CoverResult):
+    id: str
+    image: str = Field(description="URL of the front cover PNG.")
 
 
 class FormatInfo(BaseModel):

@@ -4,16 +4,15 @@ Produces the same :class:`~covers.artdirection.ArtDirection` brief from the same
 style guidance, so the renderer cannot tell which director wrote it. Selected with
 ``director="openai"``.
 
-Worth knowing what this does and does not buy you. Measured on one cover
-(``kiwi_klappenbroschur``, 304 pp, ``illustrated``): the brief is ~9 s of a ~144 s
-request and the image generation is the other ~135 s. Dropping to a single provider
-is a dependency and billing simplification, not a latency one -- ``image_quality``
-is the setting that moves the number.
+Dropping to a single provider is a dependency and billing simplification, not a
+latency one: the brief is a few seconds of a request the image call dominates.
+``image_quality`` is the setting that moves the number (see the README).
 """
 
 import logging
 import os
 
+from . import settings
 from .artdirection import (
     DEFAULT_STYLE,
     ArtDirection,
@@ -25,24 +24,19 @@ from .artdirection import (
 
 log = logging.getLogger("covers.director_openai")
 
-MODEL = os.environ.get("COVERS_OPENAI_TEXT_MODEL", "gpt-5.4")
-
-
 async def direct_openai(
     text: str,
     title: str,
     author: str,
     *,
     style: str = DEFAULT_STYLE,
-    model: str | None = None,
-    timeout: float = 120.0,
 ) -> tuple[ArtDirection, dict]:
     """Write the cover brief with an OpenAI text model.
 
     Falls back to the deterministic brief on any failure, matching the Claude
     director's contract: a missing key degrades the cover, not the request.
     """
-    model = model or MODEL
+    model = settings.openai_text_model()
     meta: dict = {"source": "openai", "model": model, "style": style}
     prompt_text, clipped = clip_prompt(text)
     meta["input_clipped"] = clipped
@@ -51,13 +45,9 @@ async def direct_openai(
         log.info("OPENAI_API_KEY not set; using the deterministic brief")
         return degrade(meta, "no OPENAI_API_KEY", text, title, author, style)
 
-    try:
-        import openai
-        from openai import AsyncOpenAI
-    except ImportError:  # pragma: no cover
-        return degrade(meta, "openai package not installed", text, title, author, style)
+    import openai
 
-    client = AsyncOpenAI(timeout=timeout)
+    client = openai.AsyncOpenAI(timeout=120.0)
     user = user_prompt(title, author, prompt_text)
 
     try:

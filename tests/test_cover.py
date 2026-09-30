@@ -113,7 +113,6 @@ def _ctx(format_key="kiwi_paperback", title="Die Reise", **kwargs):
             genre_line="Roman",
             imprint="Kiepenheuer & Witsch",
         ),
-        palette=direction.palette,
         seed=42,
     )
 
@@ -123,6 +122,26 @@ def test_every_template_renders_a_front(template):
     svg = build_front(_ctx(template=template))
     assert svg.startswith("<svg") and svg.endswith("</svg>")
     assert "<path" in svg  # type made it in
+
+
+@pytest.mark.parametrize("dpi", [72, 300])
+def test_png_carries_its_resolution(dpi):
+    """cairosvg writes no pHYs chunk; without one a 300 dpi file opens at 72."""
+    import io
+
+    from PIL import Image
+
+    from covers.render import render
+
+    ctx = _ctx()
+    ctx.geo = geometry(FORMATS["kiwi_paperback"], dpi=dpi)
+    with Image.open(io.BytesIO(render(ctx))) as img:
+        img.load()  # a bad CRC in the spliced chunk fails here
+        assert img.info["dpi"] == pytest.approx((dpi, dpi), abs=0.1)
+        assert img.size == (
+            round(ctx.geo.front_bleed_w_mm / 25.4 * dpi),
+            round(ctx.geo.front_bleed_h_mm / 25.4 * dpi),
+        )
 
 
 def test_front_canvas_is_the_trim_plus_bleed():
@@ -219,8 +238,7 @@ def test_catalogue_lists_the_german_formats():
     assert "rororo_band" in body["templates"]
 
 
-def test_generate_returns_the_image_and_geometry(tmp_path, monkeypatch):
-    monkeypatch.setattr("covers.main.OUTPUT_DIR", tmp_path)
+def test_generate_returns_the_image_and_geometry(output_dir):
     response = client.post(
         "/generate",
         json={
@@ -230,6 +248,7 @@ def test_generate_returns_the_image_and_geometry(tmp_path, monkeypatch):
             "format": "kiwi_klappenbroschur",
             "template": "kiwi_flat",
             "palette": "kobalt",
+            "dpi": 72,
         },
     )
     assert response.status_code == 200, response.text
@@ -244,19 +263,17 @@ def test_generate_returns_the_image_and_geometry(tmp_path, monkeypatch):
     assert asset.headers["content-type"] == "image/png"
 
 
-def test_generate_can_return_an_image_inline(tmp_path, monkeypatch):
-    monkeypatch.setattr("covers.main.OUTPUT_DIR", tmp_path)
+def test_generate_can_return_an_image_inline(output_dir):
     response = client.post(
         "/generate?inline=true",
-        json={"text": "Kurz.", "title": "Kurz", "author": "K. Autor"},
+        json={"text": "Kurz.", "title": "Kurz", "author": "K. Autor", "dpi": 72},
     )
     assert response.status_code == 200
     assert response.headers["content-type"] == "image/png"
     assert response.content[:8] == b"\x89PNG\r\n\x1a\n"
 
 
-def test_unknown_format_is_a_422(tmp_path, monkeypatch):
-    monkeypatch.setattr("covers.main.OUTPUT_DIR", tmp_path)
+def test_unknown_format_is_a_422(output_dir):
     response = client.post(
         "/generate",
         json={"text": "x", "title": "x", "author": "x", "format": "nope"},
@@ -264,8 +281,7 @@ def test_unknown_format_is_a_422(tmp_path, monkeypatch):
     assert response.status_code == 422
 
 
-def test_image_route_refuses_traversal(tmp_path, monkeypatch):
-    monkeypatch.setattr("covers.main.OUTPUT_DIR", tmp_path)
+def test_image_route_refuses_traversal(output_dir):
     assert client.get("/covers/abc123/../../etc/passwd").status_code == 404
     assert client.get("/covers/..%2F..%2Fetc/front.png").status_code == 404
     assert client.get("/covers/abc123/front.svg").status_code == 404
@@ -414,12 +430,12 @@ def test_caller_pinned_copy_lands_on_the_brief_not_just_the_content():
         ({"genre_line": "Essays"}, "caller"),
     ],
 )
-async def test_suggestions_report_who_wrote_the_copy(tmp_path, kwargs, expected):
+async def test_suggestions_report_who_wrote_the_copy(kwargs, expected):
     from covers.pipeline import create_cover
 
     result = await create_cover(
         text="Zwei Schwestern erben ein Haus.", title="Das Haus", author="J. W.",
-        outdir=tmp_path, director="none", artwork="none", dpi=72, **kwargs,
+        director="none", artwork="none", dpi=72, **kwargs,
     )
     s = result["suggestions"]
     assert s["genre_line"]["source"] == expected
@@ -427,8 +443,7 @@ async def test_suggestions_report_who_wrote_the_copy(tmp_path, kwargs, expected)
     assert s["genre_line"]["value"] == result["content"]["genre_line"]
 
 
-def test_response_carries_style_and_director(tmp_path, monkeypatch):
-    monkeypatch.setattr("covers.main.OUTPUT_DIR", tmp_path)
+def test_response_carries_style_and_director(output_dir):
     body = client.post(
         "/generate",
         json={"text": "Ein Haus am Hafen.", "title": "Das Haus", "author": "J. W.",

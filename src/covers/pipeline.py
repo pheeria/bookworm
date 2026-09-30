@@ -9,7 +9,6 @@
 
 import asyncio
 import logging
-from pathlib import Path
 
 from . import imagegen
 from .artdirection import (
@@ -28,13 +27,13 @@ from .render import render
 
 log = logging.getLogger("covers.pipeline")
 
+
 async def create_cover(
     *,
     text: str,
     title: str,
     author: str,
-    outdir: Path,
-    format_key: str | None = None,
+    format: str | None = None,
     dpi: int = 300,
     imprint: str | None = None,
     template: str | None = None,
@@ -50,7 +49,7 @@ async def create_cover(
     seed: int | None = None,
     marks: bool = False,
 ) -> dict:
-    fmt = resolve_format(format_key)
+    fmt = resolve_format(format)
     geo = geometry(fmt, dpi=dpi)
 
     if director == "openai":
@@ -113,7 +112,7 @@ async def create_cover(
                     update={"motif": DRAWN_MOTIFS[seed % len(DRAWN_MOTIFS)]}
                 )
         else:
-            artwork_uri = imagegen.to_data_uri(art.image)
+            artwork_uri = await asyncio.to_thread(imagegen.to_data_uri, art.image)
             art_meta = dict(art.meta)
             art_meta["placement_mm"] = [round(v, 2) for v in plan]
             art_meta["effective_dpi"] = imagegen.effective_dpi(
@@ -148,14 +147,12 @@ async def create_cover(
         geo=geo,
         direction=direction,
         content=content,
-        palette=direction.palette,
         seed=seed,
         artwork_uri=artwork_uri,
         marks=marks,
-        notes=notes,
     )
 
-    result = await asyncio.to_thread(render, ctx, outdir)
+    png = await asyncio.to_thread(render, ctx)
 
     return {
         "art_direction": direction.model_dump(),
@@ -167,6 +164,6 @@ async def create_cover(
         "style": style,
         "director": director,
         "seed": seed,
-        "image": str(result.image),
-        "notes": result.notes,
+        "png": png,
+        "notes": notes,
     }

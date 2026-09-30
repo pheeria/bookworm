@@ -7,28 +7,16 @@ each render small.
 
 import json
 
-import mongomock
-import mongomock.gridfs
 import pytest
-from fastapi.testclient import TestClient
 
 from books.db import SEED
-from books.models import Book
+from books.models import Book, GeneratedCover
 from bookworm.book_covers import book_defaults, format_for, theme_for
-from bookworm.main import create_app
-
-mongomock.gridfs.enable_gridfs_integration()
 
 SEEDED = json.loads(SEED.read_text(encoding="utf-8"))
 KIWI_HARDCOVER = SEEDED[0]  # Eva Menasse, Alleinruhelage
 SLUG = KIWI_HARDCOVER["slug"]
 FAST = {"dpi": 72, "director": "none", "artwork": "procedural"}
-
-
-@pytest.fixture
-def client() -> TestClient:
-    with TestClient(create_app(mongomock.MongoClient)) as c:
-        yield c
 
 
 def create(client, slug=SLUG, **body):
@@ -80,12 +68,14 @@ def test_create_makes_a_draft_from_the_book(client):
     assert cover["content"]["title"] == KIWI_HARDCOVER["title"]
     assert cover["geometry"]["format"]["key"] == "kiwi_hardcover"
     assert cover["options"] == FAST  # only what the caller set
-    assert cover["url"] == f"/cover-images/{cover['id']}.png"
+    assert cover["url"].startswith("/cover-images/")
 
     image = client.get(cover["url"])
     assert image.status_code == 200
     assert image.headers["content-type"] == "image/png"
     assert image.content[:8] == b"\x89PNG\r\n\x1a\n"
+    # Each render gets a new image id, so the URL's content never changes.
+    assert "immutable" in image.headers["cache-control"]
 
     # A draft is not on the book.
     assert book_entries(client) == []
@@ -102,9 +92,7 @@ def test_publish_puts_the_short_entry_on_the_book(client):
     cover = create(client)
     published = client.post(f"/books/{SLUG}/covers/{cover['id']}/publish").json()
     assert published["status"] == "published" and published["published_at"]
-    assert book_entries(client) == [
-        {k: cover[k] for k in ("id", "type", "url", "color", "theme")}
-    ]
+    assert book_entries(client) == [GeneratedCover.model_validate(cover).model_dump()]
     # Publishing twice does not duplicate the entry.
     client.post(f"/books/{SLUG}/covers/{cover['id']}/publish")
     assert len(book_entries(client)) == 1

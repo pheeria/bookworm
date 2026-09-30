@@ -32,8 +32,17 @@ class BookFormat:
     trim_w_mm: float
     trim_h_mm: float
     binding: Binding
-    #: Überstand -- how far the case stands proud of the book block.
+    #: Überstand -- how far a hardcover case stands proud of the book block.
     overhang_mm: float = 0.0
+
+    def summary(self) -> dict:
+        return {
+            "key": self.key,
+            "label": self.label,
+            "imprint": self.imprint,
+            "binding": self.binding,
+            "trim_mm": [self.trim_w_mm, self.trim_h_mm],
+        }
 
 
 FORMATS: dict[str, BookFormat] = {
@@ -155,13 +164,7 @@ class Geometry:
 
     def to_dict(self) -> dict:
         return {
-            "format": {
-                "key": self.fmt.key,
-                "label": self.fmt.label,
-                "imprint": self.fmt.imprint,
-                "binding": self.fmt.binding,
-                "trim_mm": [self.fmt.trim_w_mm, self.fmt.trim_h_mm],
-            },
+            "format": self.fmt.summary(),
             "dpi": self.dpi,
             "panel_mm": [self.panel_w_mm, self.panel_h_mm],
             "bleed_mm": self.bleed_mm,
@@ -180,12 +183,11 @@ def geometry(fmt: BookFormat, dpi: int = 300) -> Geometry:
     A hardcover jacket is sized to the case rather than the block, so it gains
     the Überstand on the fore-edge and at head and foot.
     """
-    hardcover = fmt.binding == "hardcover"
     return Geometry(
         fmt=fmt,
         dpi=dpi,
-        panel_w_mm=fmt.trim_w_mm + (fmt.overhang_mm if hardcover else 0.0),
-        panel_h_mm=fmt.trim_h_mm + (2 * fmt.overhang_mm if hardcover else 0.0),
+        panel_w_mm=fmt.trim_w_mm + fmt.overhang_mm,
+        panel_h_mm=fmt.trim_h_mm + 2 * fmt.overhang_mm,
         bleed_mm=BLEED_MM,
         safety_mm=SAFETY_MM,
     )

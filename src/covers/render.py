@@ -5,39 +5,38 @@ from that exact geometry. This is CPU-bound and synchronous -- callers should
 push it to a worker thread.
 """
 
-import io
-from dataclasses import dataclass, field
-from pathlib import Path
-
-from PIL import Image
+import struct
+import zlib
 
 from . import _cairo
-from .formats import px
+from .formats import MM_PER_INCH, px
 from .layout import Ctx, build_front
 
 FILENAME = "front.png"
 
-
-@dataclass
-class RenderResult:
-    image: Path
-    notes: list[str] = field(default_factory=list)
+_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+_IHDR_END = len(_PNG_SIGNATURE) + 4 + 4 + 13 + 4  # length, type, data, CRC
 
 
-def render(ctx: Ctx, outdir: Path) -> RenderResult:
-    """Write ``front.png`` into ``outdir``, with the physical resolution stamped in.
-
-    cairosvg emits no pHYs chunk, so a bare PNG would open at 72 dpi in a layout
-    application even though the pixels are 300 dpi worth.
-    """
+def render(ctx: Ctx) -> bytes:
+    """The front cover as PNG bytes, with its physical resolution stamped in."""
     g = ctx.geo
     png = _cairo.svg2png(
         bytestring=build_front(ctx).encode("utf-8"),
         output_width=px(g.front_bleed_w_mm, g.dpi),
         output_height=px(g.front_bleed_h_mm, g.dpi),
     )
-    outdir.mkdir(parents=True, exist_ok=True)
-    path = outdir / FILENAME
-    with Image.open(io.BytesIO(png)) as img:
-        img.save(path, format="PNG", dpi=(g.dpi, g.dpi))
-    return RenderResult(image=path, notes=list(ctx.notes))
+    return with_dpi(png, g.dpi)
+
+
+def with_dpi(png: bytes, dpi: int) -> bytes:
+    """Insert a pHYs chunk after IHDR.
+
+    cairosvg emits none, so a bare PNG would open at 72 dpi in a layout
+    application even though the pixels are 300 dpi worth. Splicing the chunk in
+    avoids decoding and re-compressing the whole image to set two numbers.
+    """
+    ppm = round(dpi / MM_PER_INCH * 1000)  # pixels per metre
+    body = b"pHYs" + struct.pack(">IIB", ppm, ppm, 1)
+    chunk = struct.pack(">I", 9) + body + struct.pack(">I", zlib.crc32(body))
+    return png[:_IHDR_END] + chunk + png[_IHDR_END:]

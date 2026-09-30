@@ -8,27 +8,29 @@
     POST   /books/{slug}/covers/{id}/publish      put the short entry on the book
     POST   /books/{slug}/covers/{id}/unpublish
     DELETE /books/{slug}/covers/{id}
-    GET    /cover-images/{id}.png
+    GET    /cover-images/{image_id}.png       immutable; a new render gets a new URL
 
 The book is read, never written, except for the short entry of a published cover
 in its ``generated_covers``, which is kept in step with the cover document.
 """
 
-import tempfile
+import asyncio
 import uuid
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Annotated, Any, Literal
 
 from bson import ObjectId
+from bson.errors import InvalidId
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.concurrency import run_in_threadpool
-from pydantic import BaseModel, Field
+from fastapi.exceptions import RequestValidationError
+from pydantic import BaseModel, Field, ValidationError
 
 from books import db as books_db
 from books.models import Book, BookTheme, Color, GeneratedCover, ReaderType
+from books.router import not_found
 from covers.formats import DEFAULT_FORMAT
-from covers.models import CoverRequest
+from covers.models import CoverRequest, CoverResult, FormatKey
 from covers.palettes import luminance, rgb
 from covers.pipeline import create_cover
 
@@ -48,7 +50,7 @@ class CoverOptions(CoverRequest):
     text: str | None = Field(default=None, min_length=1, description="Defaults to the book's blurb.")
     title: str | None = Field(default=None, min_length=1, description="Defaults to the book's title.")
     author: str | None = Field(default=None, min_length=1, description="Defaults to the book's author.")
-    format: str | None = Field(
+    format: FormatKey | None = Field(
         default=None, description="Defaults to the format matching the book's publisher and binding."
     )
 
@@ -63,7 +65,7 @@ class CoverPatch(BaseModel):
     theme: BookTheme | None = None
 
 
-class BookCover(BaseModel):
+class BookCover(CoverResult):
     id: str
     book: str = Field(description="The book's slug.")
     type: ReaderType
@@ -74,16 +76,6 @@ class BookCover(BaseModel):
     theme: BookTheme
     options: dict[str, Any] = Field(description="What the caller set; regeneration reuses it.")
     request: dict[str, Any] = Field(description="The effective request: book defaults plus options.")
-    art_direction: dict[str, Any]
-    art_direction_meta: dict[str, Any]
-    artwork: dict[str, Any] | None
-    geometry: dict[str, Any]
-    content: dict[str, Any]
-    suggestions: dict[str, Any]
-    notes: list[str]
-    style: str
-    director: str
-    seed: int
     created_at: datetime
     updated_at: datetime
 
@@ -178,19 +170,34 @@ Deps = Annotated[Stores, Depends()]
 async def _book(stores: Stores, slug: str) -> tuple[ObjectId, Book]:
     found = await run_in_threadpool(books_db.find_book, stores.books, slug)
     if found is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, f"no book {slug!r}")
+        raise not_found(slug)
     return found
+
+
+async def _book_id(stores: Stores, slug: str) -> ObjectId:
+    """For endpoints that only need to know which book, not what it says."""
+    found = await run_in_threadpool(books_db.book_id, stores.books, slug)
+    if found is None:
+        raise not_found(slug)
+    return found
+
+
+def _no_cover(cover_id: str) -> HTTPException:
+    return HTTPException(status.HTTP_404_NOT_FOUND, f"no cover {cover_id!r} for this book")
 
 
 async def _cover(stores: Stores, book_id: ObjectId, cover_id: str) -> dict:
     doc = await run_in_threadpool(cover_store.get, stores.covers, book_id, cover_id)
     if doc is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, f"no cover {cover_id!r} for this book")
+        raise _no_cover(cover_id)
     return doc
 
 
-def _entry(doc: dict) -> GeneratedCover:
-    return GeneratedCover(**{k: doc[k] for k in ("id", "type", "url", "color", "theme")})
+async def _update(stores: Stores, book_id: ObjectId, cover_id: str, fields: dict) -> dict:
+    doc = await run_in_threadpool(cover_store.update, stores.covers, book_id, cover_id, fields)
+    if doc is None:
+        raise _no_cover(cover_id)
+    return doc
 
 
 def _response(doc: dict, slug: str) -> BookCover:
@@ -201,43 +208,29 @@ async def _render(stores: Stores, cover_id: str, book: Book, options: dict) -> d
     """Generate from the book's current details plus ``options``; store the PNG."""
     try:
         request = CoverRequest.model_validate({**book_defaults(book), **options})
-    except ValueError as exc:
-        raise HTTPException(422, str(exc)) from exc
-    with tempfile.TemporaryDirectory() as tmp:
-        try:
-            result = await create_cover(
-                **request.model_dump(exclude={"format"}),
-                format_key=request.format,
-                outdir=Path(tmp),
-            )
-        except KeyError as exc:
-            raise HTTPException(422, str(exc.args[0] if exc.args else exc)) from exc
-        except ValueError as exc:
-            raise HTTPException(422, str(exc)) from exc
-        image_id = await run_in_threadpool(
-            cover_store.put_image, stores.images, cover_id, Path(result["image"])
-        )
+    except ValidationError as exc:
+        raise RequestValidationError(exc.errors()) from exc
+    result = await create_cover(**request.model_dump())
+    image_id = await run_in_threadpool(cover_store.put_image, stores.images, cover_id, result["png"])
     color = result["art_direction"]["ground"].lower()
     return {
+        **{k: result[k] for k in CoverResult.model_fields},
+        # A hash-derived seed can exceed BSON's 64-bit ints; BookCover reads it back.
+        "seed": str(result["seed"]),
         "image_id": image_id,
-        "url": f"/cover-images/{cover_id}.png",
+        "url": f"/cover-images/{image_id}.png",
         "color": color,
         "theme": theme_for(color).model_dump(),
         "options": options,
         "request": request.model_dump(mode="json"),
-        # A hash-derived seed can exceed BSON's 64-bit ints; BookCover reads it back.
-        "seed": str(result["seed"]),
-        **{k: result[k] for k in (
-            "art_direction", "art_direction_meta", "artwork", "geometry", "content",
-            "suggestions", "notes", "style", "director",
-        )},
     }
 
 
 async def _sync_entry(stores: Stores, book_id: ObjectId, doc: dict) -> None:
     """Keep a published cover's short entry on the book in step with the cover."""
     if doc["status"] == "published":
-        await run_in_threadpool(books_db.put_cover_entry, stores.books, book_id, _entry(doc))
+        entry = GeneratedCover.model_validate(doc)
+        await run_in_threadpool(books_db.put_cover_entry, stores.books, book_id, entry)
 
 
 # --- Endpoints ----------------------------------------------------------------
@@ -259,7 +252,7 @@ async def create_book_cover(slug: str, body: BookCoverRequest, stores: Deps) -> 
 async def list_book_covers(
     slug: str, stores: Deps, status: Status | None = None, type: ReaderType | None = None
 ) -> list[BookCover]:
-    book_id, _ = await _book(stores, slug)
+    book_id = await _book_id(stores, slug)
     docs = await run_in_threadpool(
         cover_store.list_for_book, stores.covers, book_id, status=status, type=type
     )
@@ -268,16 +261,15 @@ async def list_book_covers(
 
 @router.get("/books/{slug}/covers/{cover_id}", response_model=BookCover)
 async def get_book_cover(slug: str, cover_id: str, stores: Deps) -> BookCover:
-    book_id, _ = await _book(stores, slug)
+    book_id = await _book_id(stores, slug)
     return _response(await _cover(stores, book_id, cover_id), slug)
 
 
 @router.patch("/books/{slug}/covers/{cover_id}", response_model=BookCover)
 async def edit_book_cover(slug: str, cover_id: str, body: CoverPatch, stores: Deps) -> BookCover:
-    book_id, _ = await _book(stores, slug)
-    await _cover(stores, book_id, cover_id)
+    book_id = await _book_id(stores, slug)
     fields = body.model_dump(exclude_unset=True, exclude_none=True)
-    doc = await run_in_threadpool(cover_store.update, stores.covers, book_id, cover_id, fields)
+    doc = await _update(stores, book_id, cover_id, fields)
     await _sync_entry(stores, book_id, doc)
     return _response(doc, slug)
 
@@ -292,45 +284,57 @@ async def regenerate_book_cover(
     # The new image is stored before the old one goes, so a failed render
     # leaves the cover as it was.
     fields = await _render(stores, cover_id, book, options)
-    doc = await run_in_threadpool(cover_store.update, stores.covers, book_id, cover_id, fields)
-    await run_in_threadpool(cover_store.delete_image, stores.images, old["image_id"])
-    await _sync_entry(stores, book_id, doc)
+    doc = await _update(stores, book_id, cover_id, fields)
+    await asyncio.gather(
+        run_in_threadpool(cover_store.delete_image, stores.images, old["image_id"]),
+        _sync_entry(stores, book_id, doc),
+    )
     return _response(doc, slug)
 
 
 @router.post("/books/{slug}/covers/{cover_id}/publish", response_model=BookCover)
 async def publish_book_cover(slug: str, cover_id: str, stores: Deps) -> BookCover:
-    book_id, _ = await _book(stores, slug)
+    book_id = await _book_id(stores, slug)
     old = await _cover(stores, book_id, cover_id)
     fields = {"status": "published", "published_at": old["published_at"] or datetime.now(UTC)}
-    doc = await run_in_threadpool(cover_store.update, stores.covers, book_id, cover_id, fields)
+    doc = await _update(stores, book_id, cover_id, fields)
     await _sync_entry(stores, book_id, doc)
     return _response(doc, slug)
 
 
 @router.post("/books/{slug}/covers/{cover_id}/unpublish", response_model=BookCover)
 async def unpublish_book_cover(slug: str, cover_id: str, stores: Deps) -> BookCover:
-    book_id, _ = await _book(stores, slug)
-    await _cover(stores, book_id, cover_id)
-    fields = {"status": "draft", "published_at": None}
-    doc = await run_in_threadpool(cover_store.update, stores.covers, book_id, cover_id, fields)
-    await run_in_threadpool(books_db.remove_cover_entry, stores.books, book_id, cover_id)
+    book_id = await _book_id(stores, slug)
+    doc, _ = await asyncio.gather(
+        _update(stores, book_id, cover_id, {"status": "draft", "published_at": None}),
+        run_in_threadpool(books_db.remove_cover_entry, stores.books, book_id, cover_id),
+    )
     return _response(doc, slug)
 
 
 @router.delete("/books/{slug}/covers/{cover_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_book_cover(slug: str, cover_id: str, stores: Deps) -> None:
-    book_id, _ = await _book(stores, slug)
-    doc = await _cover(stores, book_id, cover_id)
-    await run_in_threadpool(books_db.remove_cover_entry, stores.books, book_id, cover_id)
-    await run_in_threadpool(cover_store.delete, stores.covers, book_id, cover_id)
-    await run_in_threadpool(cover_store.delete_image, stores.images, doc["image_id"])
+    book_id = await _book_id(stores, slug)
+    doc = await run_in_threadpool(cover_store.delete, stores.covers, book_id, cover_id)
+    if doc is None:
+        raise _no_cover(cover_id)
+    await asyncio.gather(
+        run_in_threadpool(books_db.remove_cover_entry, stores.books, book_id, cover_id),
+        run_in_threadpool(cover_store.delete_image, stores.images, doc["image_id"]),
+    )
 
 
-@router.get("/cover-images/{cover_id}.png", response_class=Response)
-async def cover_image(cover_id: str, stores: Deps) -> Response:
-    doc = await run_in_threadpool(stores.covers.find_one, {"id": cover_id}, {"image_id": 1})
-    data = doc and await run_in_threadpool(cover_store.read_image, stores.images, doc["image_id"])
-    if not data:
+@router.get("/cover-images/{image_id}.png", response_class=Response)
+async def cover_image(image_id: str, stores: Deps) -> Response:
+    """A cover's PNG. Each render stores a new image, so the URL never changes content."""
+    try:
+        oid = ObjectId(image_id)
+    except InvalidId:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "not found") from None
+    data = await run_in_threadpool(cover_store.read_image, stores.images, oid)
+    if data is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "not found")
-    return Response(data, media_type="image/png")
+    return Response(
+        data, media_type="image/png",
+        headers={"Cache-Control": "public, max-age=31536000, immutable"},
+    )

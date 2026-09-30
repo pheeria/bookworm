@@ -16,7 +16,14 @@ import re
 import sys
 import zipfile
 from pathlib import Path
+from typing import get_args
 from xml.etree import ElementTree as ET
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+
+from covers.artdirection import Artwork
+from covers.formats import FORMATS
 
 DC = "{http://purl.org/dc/elements/1.1/}"
 CONTAINER = "META-INF/container.xml"
@@ -37,7 +44,7 @@ def _strip_markup(markup: str) -> str:
 
 
 def read_epub(path: Path, excerpt_chars: int = 3000) -> dict:
-    """Title, author, an excerpt, and a page estimate from character count."""
+    """Title, author and an excerpt of the opening text."""
     with zipfile.ZipFile(path) as zf:
         opf_name = _opf_path(zf)
         opf = ET.fromstring(zf.read(opf_name))
@@ -62,37 +69,37 @@ def read_epub(path: Path, excerpt_chars: int = 3000) -> dict:
         ]
 
         chunks: list[str] = []
-        total_chars = 0
+        collected = 0
         for href in [h for h in spine if h]:
+            if collected >= excerpt_chars:
+                break
             name = str(Path(base) / href) if base not in (".", "") else href
             try:
                 body = _strip_markup(zf.read(name).decode("utf-8", "replace"))
             except KeyError:
                 continue
-            total_chars += len(body)
-            if sum(len(c) for c in chunks) < excerpt_chars and len(body) > 200:
+            if len(body) > 200:
                 chunks.append(body)
+                collected += len(body)
 
     excerpt = " ".join(chunks)[:excerpt_chars]
     return {
         "title": title,
         "author": author,
         "text": (description + "\n\n" + excerpt).strip() if description else excerpt,
-        "chars": total_chars,
     }
 
 
-async def run_local(book: dict, outdir: Path, **overrides) -> dict:
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+async def run_local(book: dict, outdir: Path, **overrides) -> tuple[dict, Path]:
     from covers.pipeline import create_cover
 
-    return await create_cover(
-        text=book["text"],
-        title=book["title"],
-        author=book["author"],
-        outdir=outdir,
-        **overrides,
+    result = await create_cover(
+        text=book["text"], title=book["title"], author=book["author"], **overrides
     )
+    outdir.mkdir(parents=True, exist_ok=True)
+    path = outdir / "front.png"
+    path.write_bytes(result["png"])
+    return result, path
 
 
 def run_http(book: dict, base_url: str, **overrides) -> dict:
@@ -112,18 +119,24 @@ def run_http(book: dict, base_url: str, **overrides) -> dict:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("epubs", nargs="+", type=Path)
-    ap.add_argument("--format", dest="format_key", default=None)
+    ap.add_argument("--format", default=None, choices=sorted(FORMATS))
     ap.add_argument("--template", default=None)
     ap.add_argument("--palette", default=None)
-    ap.add_argument("--artwork", default=None, choices=["generated", "procedural", "none"])
+    ap.add_argument("--artwork", default=None, choices=get_args(Artwork))
     ap.add_argument("--local", action="store_true", help="Skip HTTP, call the pipeline.")
     ap.add_argument("--base-url", default="http://127.0.0.1:8000")
     ap.add_argument("--outdir", type=Path, default=Path("out"))
     args = ap.parse_args()
+    if args.local:
+        # The pipeline runs in this process, so the keys have to be here too.
+        from dotenv import load_dotenv
+
+        load_dotenv(ROOT / ".env")
 
     overrides = {
         k: v
         for k, v in (
+            ("format", args.format),
             ("template", args.template),
             ("palette", args.palette),
             ("artwork", args.artwork),
@@ -135,16 +148,11 @@ def main() -> int:
         book = read_epub(epub)
         print(f"\n{epub.name}")
         print(f"  {book['author']} — {book['title']}")
-        print(f"  {book['chars']:,} characters")
         if args.local:
-            result = asyncio.run(
-                run_local(book, args.outdir / epub.stem, format_key=args.format_key, **overrides)
-            )
-            print(f"  front: {result['image']}")
+            result, path = asyncio.run(run_local(book, args.outdir / epub.stem, **overrides))
+            print(f"  front: {path}")
         else:
-            result = run_http(
-                book, args.base_url, format=args.format_key, **overrides
-            )
+            result = run_http(book, args.base_url, **overrides)
             print(f"  front: {args.base_url}{result['image']}")
         for note in result.get("notes", []):
             print(f"  note: {note}")

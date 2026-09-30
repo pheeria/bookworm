@@ -20,8 +20,9 @@ PROVIDERS = ("anthropic", "openai", "fastapi")
 NATIVE = ("cairosvg", "cairocffi")
 
 CHILD = textwrap.dedent(
-    """
+    f"""
     import json, logging, os, sys
+    PROVIDERS, NATIVE = {PROVIDERS!r}, {NATIVE!r}
 
     def poison(names):
         for n in names:
@@ -35,26 +36,32 @@ CHILD = textwrap.dedent(
 
     # Stage 1 -- the schema and the renderer must import with nothing available.
     # A host validating a request should not need libcairo installed.
-    poison(("cairosvg", "cairocffi", "anthropic", "openai", "fastapi"))
+    poison(NATIVE + PROVIDERS)
     import covers
     import covers.models
     import covers.layout
-    stage1 = loaded(("cairosvg", "cairocffi", "anthropic", "openai", "fastapi"))
+    stage1 = loaded(NATIVE + PROVIDERS)
 
     # Stage 2 -- the pipeline rasterises, so cairo is legitimately its business.
     # The provider SDKs are not: they belong behind function-level imports so a
     # cover can be rendered from a stored recipe without them.
-    for n in ("cairosvg", "cairocffi"):
+    for n in NATIVE:
         del sys.modules[n]
     import covers.pipeline
-    stage2 = loaded(("anthropic", "openai", "fastapi"))
+    stage2 = loaded(PROVIDERS)
 
-    print(json.dumps({
+    # Stage 3 -- the router needs FastAPI, but including it in an app must not
+    # configure that app's process. Only covers.main, the standalone app, may.
+    for n in PROVIDERS:
+        del sys.modules[n]
+    import covers.api
+
+    print(json.dumps({{
         "env_leaked": os.environ.get("COVERS_CANARY"),
         "root_handlers": len(logging.getLogger().handlers),
         "stage1": stage1,
         "stage2": stage2,
-    }))
+    }}))
     """
 )
 
@@ -89,5 +96,6 @@ def test_importing_covers_is_inert(tmp_path):
         "application loads one .env, and the library is not it"
     )
     assert report["root_handlers"] == 0, (
-        "importing covers configured the root logger; that belongs to the app"
+        "importing covers (or covers.api) configured the root logger; that "
+        "belongs to the app"
     )

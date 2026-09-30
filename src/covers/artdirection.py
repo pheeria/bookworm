@@ -11,21 +11,16 @@ brief is derived from a hash of the input so the endpoint still returns a cover.
 
 import hashlib
 import logging
-import os
 import re
-from typing import TYPE_CHECKING, Literal, get_args
+from typing import Literal, get_args
 
 from pydantic import BaseModel, Field
 
-if TYPE_CHECKING:  # the SDK is imported lazily inside direct(); see below
-    import anthropic
-
+from . import settings
 from .palettes import PALETTES_BY_KEY, Palette, choose_palette
 from .typography import FAMILIES
 
 log = logging.getLogger("covers.artdirection")
-
-MODEL = os.environ.get("COVERS_CLAUDE_MODEL", "claude-opus-5")
 
 Template = Literal[
     "rororo_band",
@@ -360,10 +355,10 @@ async def direct(
     author: str,
     *,
     style: str = DEFAULT_STYLE,
-    client: "anthropic.AsyncAnthropic | None" = None,
 ) -> tuple[ArtDirection, dict]:
     """Produce a cover brief. Returns the brief and metadata about how it was made."""
-    meta: dict = {"source": "claude", "model": MODEL, "style": style}
+    model = settings.claude_model()
+    meta: dict = {"source": "claude", "model": model, "style": style}
     prompt_text, clipped = clip_prompt(text)
     meta["input_clipped"] = clipped
 
@@ -372,7 +367,7 @@ async def direct(
     import anthropic
 
     try:
-        ac = client or anthropic.AsyncAnthropic()
+        ac = anthropic.AsyncAnthropic()
     except Exception as exc:  # no credentials resolvable
         log.info("art direction falling back: %s", exc)
         return degrade(meta, str(exc), text, title, author, style)
@@ -381,7 +376,7 @@ async def direct(
 
     try:
         response = await ac.messages.parse(
-            model=MODEL,
+            model=model,
             max_tokens=8000,
             system=system_prompt(style),
             thinking={"type": "adaptive"},

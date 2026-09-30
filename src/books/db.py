@@ -101,8 +101,8 @@ def list_books(
 
 
 def get_book(books: Collection, slug: str) -> Book | None:
-    doc = books.find_one({"slug": slug}, _PROJECTION)
-    return Book.model_validate(doc) if doc else None
+    found = find_book(books, slug)
+    return found[1] if found else None
 
 
 def insert(books: Collection, book: Book) -> Book:
@@ -124,6 +124,8 @@ def replace(books: Collection, slug: str, book: Book) -> Book | None:
     """
     fields = _document(book, updated_at=datetime.now(UTC))
     del fields["generated_covers"]
+    # Not find_one_and_update: mongomock returns None from it when the update
+    # changes the field the filter matched on (a slug rename), unlike MongoDB.
     if not books.update_one({"slug": slug}, {"$set": fields}).matched_count:
         return None
     return get_book(books, book.slug)
@@ -142,6 +144,12 @@ def find_book(books: Collection, slug: str) -> tuple[ObjectId, Book] | None:
     """The book at ``slug`` with its database id, for linking records to it."""
     doc = books.find_one({"slug": slug}, {"created_at": 0, "updated_at": 0})
     return (doc.pop("_id"), Book.model_validate(doc)) if doc else None
+
+
+def book_id(books: Collection, slug: str) -> ObjectId | None:
+    """Just the database id of the book at ``slug``."""
+    doc = books.find_one({"slug": slug}, {"_id": 1})
+    return doc["_id"] if doc else None
 
 
 def put_cover_entry(books: Collection, book_id: ObjectId, entry: GeneratedCover) -> None:

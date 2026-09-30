@@ -8,7 +8,8 @@ Type is placed off the cap line rather than the baseline, because that is what t
 eye aligns to at display sizes.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass
+from functools import cached_property
 
 from . import motifs
 from .artdirection import ArtDirection
@@ -28,12 +29,7 @@ class Content:
 
     def summary(self) -> dict[str, str]:
         """The copy the front prints."""
-        return {
-            "title": self.title,
-            "author": self.author,
-            "genre_line": self.genre_line,
-            "imprint": self.imprint,
-        }
+        return asdict(self)
 
 
 @dataclass
@@ -41,15 +37,17 @@ class Ctx:
     geo: Geometry
     direction: ArtDirection
     content: Content
-    palette: Palette
     seed: int
     artwork_uri: str | None = None
     marks: bool = False
-    notes: list[str] = field(default_factory=list)
+
+    @cached_property
+    def palette(self) -> Palette:
+        return self.direction.palette
 
     @property
     def margin(self) -> float:
-        return self.geo.panel_w_mm * MARGIN_RATIO
+        return margin(self.geo)
 
 
 Rect = tuple[float, float, float, float]
@@ -57,6 +55,10 @@ Rect = tuple[float, float, float, float]
 #: House margin, as a fraction of the trim width. The artwork rect and the type
 #: placement both derive from it, so it has to be one number.
 MARGIN_RATIO = 0.085
+
+
+def margin(geo: Geometry) -> float:
+    return geo.panel_w_mm * MARGIN_RATIO
 
 
 # --- Type placement helpers ---
@@ -121,10 +123,6 @@ def draw_label(
     return frag, baseline
 
 
-def _rule(x: float, y: float, w: float, thickness: float, fill: str) -> str:
-    return _rect(x, y, w, thickness, fill)
-
-
 def _image(uri: str, rect: Rect) -> str:
     x, y, w, h = rect
     return (
@@ -144,7 +142,7 @@ def artwork_plan(direction: ArtDirection, geo: Geometry) -> Rect | None:
     b = geo.bleed_mm
     cw, ch = geo.front_bleed_w_mm, geo.front_bleed_h_mm
     pw, ph = geo.panel_w_mm, geo.panel_h_mm
-    m = pw * MARGIN_RATIO
+    m = margin(geo)
     t = direction.template
     if t == "photo_duotone":
         return (0.0, 0.0, cw, b + ph * 0.62)
@@ -196,7 +194,7 @@ def _front_kiwi_flat(ctx: Ctx) -> str:
     out.append(frag)
 
     rule_y = author_base + author_size * 0.85
-    out.append(_rule(left, rule_y, measure, max(0.35, pw * 0.0030), p.accent))
+    out.append(_rect(left, rule_y, measure, max(0.35, pw * 0.0030), p.accent))
 
     title_top = rule_y + m * 0.6
     floor = (rect[1] if rect else b + ph - m * 2.2) - m * 0.5
@@ -381,7 +379,7 @@ def _front_type_block(ctx: Ctx) -> str:
         out.append(frag)
         if w < measure * 0.995:  # a short last line gets a rule to the margin
             out.append(
-                _rule(
+                _rect(
                     left + w + size * 0.12,
                     y + f.cap_height * size - size * 0.18,
                     max(0.0, measure - w - size * 0.12),
@@ -429,8 +427,8 @@ def _front_didone_centre(ctx: Ctx) -> str:
 
     hair = max(0.25, pw * 0.0018)
     for y in (b + m * 0.75, b + ph - m * 0.75):
-        out.append(_rule(left, y, measure, hair, p.accent))
-        out.append(_rule(left, y + hair * 3.5, measure, hair, p.accent))
+        out.append(_rect(left, y, measure, hair, p.accent))
+        out.append(_rect(left, y + hair * 3.5, measure, hair, p.accent))
 
     author_size = pw * 0.038
     frag, author_base = draw_label(

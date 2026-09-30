@@ -3,22 +3,13 @@
 import copy
 import json
 
-import mongomock
 import pytest
-from fastapi.testclient import TestClient
 
 from books import db
 from books.db import SEED
 from books.models import GeneratedCover
-from bookworm.main import create_app
 
 SEEDED = json.loads(SEED.read_text(encoding="utf-8"))
-
-
-@pytest.fixture
-def client() -> TestClient:
-    with TestClient(create_app(mongomock.MongoClient)) as c:  # lifespan seeds it
-        yield c
 
 
 def new_book(**overrides) -> dict:

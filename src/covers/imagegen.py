@@ -9,6 +9,7 @@ and resampled to the requested resolution. The response reports the artwork's
 native resolution so nobody mistakes an upscale for real 300 dpi detail.
 """
 
+import asyncio
 import base64
 import io
 import logging
@@ -18,14 +19,12 @@ from typing import Literal
 
 from PIL import Image, ImageOps
 
+from . import settings
 from .artdirection import DEFAULT_STYLE
 from .formats import MM_PER_INCH
 from .palettes import rgb
 
 log = logging.getLogger("covers.imagegen")
-
-MODEL = os.environ.get("COVERS_IMAGE_MODEL", "gpt-image-2")
-QUALITY = os.environ.get("COVERS_IMAGE_QUALITY", "high")
 
 Quality = Literal["low", "medium", "high", "auto"]
 
@@ -97,33 +96,25 @@ async def generate(
     treatment: Treatment = "none",
     duotone_colours: tuple[str, str] | None = None,
     style: str = DEFAULT_STYLE,
-    model: str | None = None,
     quality: str | None = None,
-    timeout: float = 180.0,
 ) -> Artwork | None:
     """Paint the front-cover artwork, or return ``None`` if OpenAI is unavailable.
 
     Returning ``None`` rather than raising lets the renderer fall back to a
     procedural motif, so a missing key degrades the cover instead of the request.
     """
-    try:
-        from openai import AsyncOpenAI
-    except ImportError:  # pragma: no cover
-        log.info("openai package not installed; skipping artwork")
-        return None
-
     if not os.environ.get("OPENAI_API_KEY"):
         log.info("OPENAI_API_KEY not set; skipping artwork")
         return None
 
     import openai
 
-    model = model or MODEL
-    quality = quality or QUALITY
+    model = settings.image_model()
+    quality = quality or settings.image_quality()
     size = _best_size(target_w_px / target_h_px)
     prompt = build_prompt(image_prompt, palette_hexes, style)
 
-    client = AsyncOpenAI(timeout=timeout)
+    client = openai.AsyncOpenAI(timeout=180.0)
     try:
         response = await client.images.generate(
             model=model,
@@ -142,16 +133,10 @@ async def generate(
         log.warning("image generation returned no image data; falling back to a motif")
         return None
 
-    raw = base64.b64decode(datum.b64_json)
-    native = Image.open(io.BytesIO(raw)).convert("RGB")
-    native_w, native_h = native.size
-
-    art = cover_crop(native, target_w_px, target_h_px)
-    if treatment == "grayscale":
-        art = art.convert("L").convert("RGB")
-    elif treatment == "duotone" and duotone_colours:
-        art = duotone(art, *duotone_colours)
-
+    # Decoding, resampling and toning a multi-megapixel image is CPU-bound.
+    art, (native_w, native_h) = await asyncio.to_thread(
+        _process, datum.b64_json, target_w_px, target_h_px, treatment, duotone_colours
+    )
     return Artwork(
         image=art,
         meta={
@@ -165,6 +150,23 @@ async def generate(
             "prompt": prompt,
         },
     )
+
+
+def _process(
+    b64: str,
+    target_w: int,
+    target_h: int,
+    treatment: Treatment,
+    duotone_colours: tuple[str, str] | None,
+) -> tuple[Image.Image, tuple[int, int]]:
+    """Decode, crop and tone the artwork. Returns it and its native size."""
+    native = Image.open(io.BytesIO(base64.b64decode(b64))).convert("RGB")
+    art = cover_crop(native, target_w, target_h)
+    if treatment == "grayscale":
+        art = art.convert("L").convert("RGB")
+    elif treatment == "duotone" and duotone_colours:
+        art = duotone(art, *duotone_colours)
+    return art, native.size
 
 
 def cover_crop(img: Image.Image, target_w: int, target_h: int) -> Image.Image:
@@ -186,7 +188,7 @@ def duotone(img: Image.Image, shadow_hex: str, highlight_hex: str) -> Image.Imag
 def to_data_uri(img: Image.Image, *, quality: int = 92) -> str:
     """Encode for embedding in the SVG. JPEG, because artwork is continuous-tone."""
     buf = io.BytesIO()
-    img.save(buf, format="JPEG", quality=quality, subsampling=1, optimize=True)
+    img.save(buf, format="JPEG", quality=quality, subsampling=1)
     encoded = base64.b64encode(buf.getvalue()).decode("ascii")
     return f"data:image/jpeg;base64,{encoded}"
 

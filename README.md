@@ -22,10 +22,14 @@ are set afterwards as outlined vector type at the exact trim size.
 after its endpoint, because it is on its way to being one component of a larger
 book-metadata API rather than a service of its own. Everything cover-related is
 `src/covers/`; nothing in it may configure the process (no `.env` loading, no root
-logger, no middleware) — that belongs to whatever application composes it.
+logger, no middleware) — that belongs to whatever application composes it. Its
+endpoints are `covers.api.router`; `covers.main:app` is the one module that sets up
+logging and CORS, for running covers on its own. `bookworm.main:app` includes the
+router alongside `books` and the book covers.
 
 Settings are prefixed **`COVERS_*`** so they can share one `.env` with the rest of that
-API. They were `BOOKWORM_*`; rename them in your `.env` if you set any. Provider keys
+API, and are read when used (`covers/settings.py`), not at import, so the order of
+`.env` loading and imports does not matter. They were `BOOKWORM_*`; rename them in your `.env` if you set any. Provider keys
 (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`) keep their conventional names.
 
 ## Quick start
@@ -73,8 +77,9 @@ motif and no picture usually means a key did not resolve, not that the art
 direction chose austerity. Check `art_direction_meta.source` and `notes`, or call
 `GET /healthz`, which reports whether each key is visible.
 
-`load_dotenv()` resolves `.env` relative to the package, so it is found when the
-service runs from the project. A script living elsewhere has to pass the path.
+`bookworm.main` loads `.env` from the project root, so it is found whatever the
+working directory. `covers.main:app` on its own loads none: export the variables,
+or run the combined app. `scripts/from_epub.py --local` loads it itself.
 
 ## Books
 
@@ -130,7 +135,7 @@ caller's.
 | `POST` | `/books/{slug}/covers/{id}/publish` | Add `{id, type, url, color, theme}` to the book's `generated_covers` |
 | `POST` | `/books/{slug}/covers/{id}/unpublish` | Remove it again |
 | `DELETE` | `/books/{slug}/covers/{id}` | The cover, its image and its entry. 204 |
-| `GET` | `/cover-images/{id}.png` | The image. Not under the book, so a published `url` survives a slug change |
+| `GET` | `/cover-images/{image_id}.png` | The image, cached as immutable: each render gets a new id and URL. Not under the book, so a published `url` survives a slug change |
 
 A published cover's entry follows the cover: a PATCH or a regeneration updates it.
 `color` is the brief's ground colour, and `theme` is derived from it by the same
