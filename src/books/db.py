@@ -1,105 +1,75 @@
-"""SQLite storage for books.
+"""MongoDB storage for books.
 
-Covers are stored as JSON columns: nothing queries into them, and they are only
-ever read and written together with their book.
+One document per book in the ``books`` collection, covers embedded: nothing
+queries into them, and they are only ever read and written with their book.
+``slug`` and ``isbn`` carry unique indexes; ``_id`` stays a driver-made ObjectId
+so a PUT can rename a slug in place.
+
+Settings, read at ``connect()`` rather than import:
+
+    MONGODB_URI        mongodb+srv://cluster0.example.mongodb.net  (required)
+    MONGODB_USERNAME   override credentials in the URI, if either is set
+    MONGODB_PASSWORD
+    MONGODB_DB         database name, default "bookworm"
 """
 
 import json
 import os
-import sqlite3
-from collections.abc import Iterator
+import re
 from datetime import UTC, datetime
 from pathlib import Path
+
+from pymongo import ASCENDING, MongoClient
+from pymongo.collection import Collection
 
 from .models import Book
 
 SEED = Path(__file__).with_name("seed.json")
 
-_COLUMNS = tuple(Book.model_fields)
-_JSON = ("original_cover", "generated_covers")
-
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS books (
-    slug             TEXT PRIMARY KEY,
-    isbn             TEXT NOT NULL UNIQUE,
-    title            TEXT NOT NULL,
-    subtitle         TEXT NOT NULL,
-    author           TEXT NOT NULL,
-    publisher        TEXT NOT NULL,
-    url              TEXT NOT NULL,
-    category         TEXT NOT NULL,
-    price            TEXT NOT NULL,
-    pages            INTEGER NOT NULL,
-    format           TEXT NOT NULL,
-    blurb            TEXT NOT NULL,
-    original_cover   TEXT NOT NULL,
-    generated_covers TEXT NOT NULL,
-    created_at       TEXT NOT NULL,
-    updated_at       TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS books_publisher ON books(publisher);
-CREATE INDEX IF NOT EXISTS books_category  ON books(category);
-CREATE INDEX IF NOT EXISTS books_format    ON books(format);
-"""
+_collection: Collection | None = None
 
 
-def db_path() -> Path:
-    return Path(os.environ.get("BOOKS_DB_PATH", "data/books.db")).resolve()
+def connect() -> MongoClient:
+    uri = os.environ.get("MONGODB_URI", "").strip()
+    if not uri:
+        raise RuntimeError("MONGODB_URI is not set; the books API needs a MongoDB connection string")
+    credentials = {
+        key: value
+        for key, var in (("username", "MONGODB_USERNAME"), ("password", "MONGODB_PASSWORD"))
+        if (value := os.environ.get(var))
+    }
+    return MongoClient(uri, appname="bookworm", tz_aware=True, **credentials)
 
 
-def connect(path: Path | None = None) -> sqlite3.Connection:
-    # FastAPI runs sync dependencies and endpoints on different threadpool threads.
-    conn = sqlite3.connect(path or db_path(), check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    # LIKE is case-insensitive for ASCII only, so search folds in Python for umlauts.
-    conn.create_function("fold", 1, str.casefold, deterministic=True)
-    return conn
+def init(client: MongoClient) -> None:
+    """Point the API at ``client``, create indexes, and seed an empty collection."""
+    global _collection
+    _collection = client[os.environ.get("MONGODB_DB", "bookworm")]["books"]
+    _collection.create_index("slug", unique=True)
+    _collection.create_index("isbn", unique=True)
+    for field in ("publisher", "category", "format"):
+        _collection.create_index([(field, ASCENDING)])
+    if _collection.estimated_document_count() == 0:
+        now = datetime.now(UTC)
+        _collection.insert_many(
+            {**Book.model_validate(raw).model_dump(), "created_at": now, "updated_at": now}
+            for raw in json.loads(SEED.read_text(encoding="utf-8"))
+        )
 
 
-def init(path: Path | None = None) -> None:
-    """Create the schema, and seed from seed.json if the table is empty."""
-    path = path or db_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    conn = connect(path)
-    try:
-        with conn:
-            conn.executescript(SCHEMA)
-            if conn.execute("SELECT 1 FROM books LIMIT 1").fetchone() is None:
-                for raw in json.loads(SEED.read_text(encoding="utf-8")):
-                    insert(conn, Book.model_validate(raw))
-    finally:
-        conn.close()
+def get_db() -> Collection:
+    """FastAPI dependency: the books collection. The client pools connections itself."""
+    if _collection is None:
+        raise RuntimeError("books.db.init() has not been called")
+    return _collection
 
 
-def get_db() -> Iterator[sqlite3.Connection]:
-    """FastAPI dependency: one connection per request."""
-    conn = connect()
-    try:
-        yield conn
-    finally:
-        conn.close()
-
-
-def _now() -> str:
-    return datetime.now(UTC).isoformat(timespec="seconds")
-
-
-def _values(book: Book) -> dict:
-    data = book.model_dump()
-    for key in _JSON:
-        data[key] = json.dumps(data[key], ensure_ascii=False)
-    return data
-
-
-def _book(row: sqlite3.Row) -> Book:
-    data = dict(row)  # created_at/updated_at are ignored by the model
-    for key in _JSON:
-        data[key] = json.loads(row[key])
-    return Book.model_validate(data)
+def _book(doc: dict) -> Book:
+    return Book.model_validate({key: doc[key] for key in Book.model_fields})
 
 
 def list_books(
-    conn: sqlite3.Connection,
+    books: Collection,
     *,
     publisher: str | None = None,
     category: str | None = None,
@@ -108,50 +78,38 @@ def list_books(
     limit: int = 50,
     offset: int = 0,
 ) -> tuple[list[Book], int]:
-    clauses, params = [], []
-    for column, value in (("publisher", publisher), ("category", category), ("format", format)):
-        if value is not None:
-            clauses.append(f"{column} = ?")
-            params.append(value)
+    query: dict = {
+        field: value
+        for field, value in (("publisher", publisher), ("category", category), ("format", format))
+        if value is not None
+    }
     if q:
-        clauses.append("(fold(title) LIKE ? OR fold(author) LIKE ? OR fold(subtitle) LIKE ?)")
-        like = f"%{q.casefold()}%"
-        params += [like, like, like]
-    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        pattern = {"$regex": re.escape(q), "$options": "i"}
+        query["$or"] = [{field: pattern} for field in ("title", "author", "subtitle")]
 
-    total = conn.execute(f"SELECT COUNT(*) FROM books {where}", params).fetchone()[0]
-    rows = conn.execute(
-        f"SELECT * FROM books {where} ORDER BY rowid LIMIT ? OFFSET ?",
-        [*params, limit, offset],
-    ).fetchall()
-    return [_book(r) for r in rows], total
+    total = books.count_documents(query)
+    docs = books.find(query).sort("_id", ASCENDING).skip(offset).limit(limit)
+    return [_book(d) for d in docs], total
 
 
-def get_book(conn: sqlite3.Connection, slug: str) -> Book | None:
-    row = conn.execute("SELECT * FROM books WHERE slug = ?", (slug,)).fetchone()
-    return _book(row) if row else None
+def get_book(books: Collection, slug: str) -> Book | None:
+    doc = books.find_one({"slug": slug})
+    return _book(doc) if doc else None
 
 
-def insert(conn: sqlite3.Connection, book: Book) -> None:
-    """Raises sqlite3.IntegrityError on a duplicate slug or ISBN."""
-    now = _now()
-    columns = (*_COLUMNS, "created_at", "updated_at")
-    conn.execute(
-        f"INSERT INTO books ({', '.join(columns)}) "
-        f"VALUES ({', '.join(':' + c for c in columns)})",
-        {**_values(book), "created_at": now, "updated_at": now},
+def insert(books: Collection, book: Book) -> None:
+    """Raises pymongo.errors.DuplicateKeyError on a duplicate slug or ISBN."""
+    now = datetime.now(UTC)
+    books.insert_one({**book.model_dump(), "created_at": now, "updated_at": now})
+
+
+def replace(books: Collection, slug: str, book: Book) -> bool:
+    """Replace the book at ``slug``. False if there is none; DuplicateKeyError on a clash."""
+    result = books.update_one(
+        {"slug": slug}, {"$set": {**book.model_dump(), "updated_at": datetime.now(UTC)}}
     )
+    return result.matched_count > 0
 
 
-def replace(conn: sqlite3.Connection, slug: str, book: Book) -> bool:
-    """Replace the book at ``slug``. False if there is none; IntegrityError on a clash."""
-    assignments = ", ".join(f"{c} = :{c}" for c in (*_COLUMNS, "updated_at"))
-    cursor = conn.execute(
-        f"UPDATE books SET {assignments} WHERE slug = :old_slug",
-        {**_values(book), "updated_at": _now(), "old_slug": slug},
-    )
-    return cursor.rowcount > 0
-
-
-def delete(conn: sqlite3.Connection, slug: str) -> bool:
-    return conn.execute("DELETE FROM books WHERE slug = ?", (slug,)).rowcount > 0
+def delete(books: Collection, slug: str) -> bool:
+    return books.delete_one({"slug": slug}).deleted_count > 0

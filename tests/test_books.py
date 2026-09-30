@@ -1,8 +1,9 @@
-"""The books CRUD API, against a throwaway SQLite database per test."""
+"""The books CRUD API, against an in-memory mongomock database per test."""
 
 import copy
 import json
 
+import mongomock
 import pytest
 from fastapi.testclient import TestClient
 
@@ -13,9 +14,9 @@ SEEDED = json.loads(SEED.read_text(encoding="utf-8"))
 
 
 @pytest.fixture
-def client(tmp_path, monkeypatch) -> TestClient:
-    monkeypatch.setenv("BOOKS_DB_PATH", str(tmp_path / "books.db"))
-    with TestClient(app) as c:  # the lifespan creates and seeds the database
+def client(monkeypatch) -> TestClient:
+    monkeypatch.setattr("books.db.connect", mongomock.MongoClient)
+    with TestClient(app) as c:  # the lifespan indexes and seeds the collection
         yield c
 
 
@@ -33,10 +34,10 @@ def test_seeded_from_books_ts(client):
     assert [b["slug"] for b in body["items"]] == [b["slug"] for b in SEEDED]
 
 
-def test_seeding_is_idempotent(client, tmp_path):
+def test_seeding_is_idempotent(client):
     from books import db
 
-    db.init(tmp_path / "books.db")
+    db.init(db.get_db().database.client)
     assert client.get("/books").json()["total"] == 25
 
 

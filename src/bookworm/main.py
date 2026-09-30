@@ -2,8 +2,8 @@
 
     uv run uvicorn bookworm.main:app --reload
 
-This module owns the process: it loads ``.env``, configures CORS and opens the
-books database. ``books`` and ``covers`` stay libraries.
+This module owns the process: it loads ``.env``, configures CORS and connects
+the books API to MongoDB. ``books`` and ``covers`` stay libraries.
 """
 
 from contextlib import asynccontextmanager
@@ -26,8 +26,10 @@ from covers.main import cors_origins
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    books_db.init()
+    client = books_db.connect()
+    books_db.init(client)
     yield
+    client.close()
 
 
 app = FastAPI(

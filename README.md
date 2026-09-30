@@ -81,8 +81,9 @@ service runs from the project. A script living elsewhere has to pass the path.
 
 ## Books
 
-`books` is the catalogue package: CRUD over a SQLite database, served next to the
-cover endpoints by `bookworm.main:app`. (`covers.main:app` still runs covers alone.)
+`books` is the catalogue package: CRUD over a MongoDB collection (Atlas works),
+served next to the cover endpoints by `bookworm.main:app`. (`covers.main:app` still
+runs covers alone, without MongoDB.)
 
 | Method | Path | |
 |---|---|---|
@@ -92,10 +93,17 @@ cover endpoints by `bookworm.main:app`. (`covers.main:app` still runs covers alo
 | `PUT` | `/books/{slug}` | Full replace, generated covers included; the slug may change |
 | `DELETE` | `/books/{slug}` | 204 |
 
-The database lives at `BOOKS_DB_PATH` (default `data/books.db`). On first start it is
-created and seeded from `src/books/seed.json`, which is an export of
-`../recover/books.ts` (`node scripts/export_books_ts.mjs`). After that the database
-is the source of truth, and re-exporting does not change a database that already has books.
+Set `MONGODB_URI`, plus `MONGODB_USERNAME` and `MONGODB_PASSWORD` if the credentials
+are not in the URI. The database is `MONGODB_DB` (default `bookworm`), the collection
+`books`. Each book is one document with its covers embedded, with unique indexes on
+`slug` and `isbn`.
+
+On start the API creates the indexes, and seeds an empty collection from
+`src/books/seed.json`, an export of `../recover/books.ts`
+(`node scripts/export_books_ts.mjs`). After that the collection is the source of
+truth; re-exporting does not touch a collection that already has books.
+
+Tests run against `mongomock` in memory and never reach a real cluster.
 
 ## Formats
 
