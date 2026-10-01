@@ -10,17 +10,23 @@ eye aligns to at display sizes.
 
 import io
 import math
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from functools import cached_property
 from typing import Any
 
-from PIL import Image, ImageOps
+from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageOps
 
 from . import motifs
 from .artdirection import ArtDirection
 from .formats import Geometry
 from .lettering import Ink
-from .palettes import Palette, contrasting_ink, luminance
+from .palettes import (
+    Palette,
+    contrast_ratio,
+    contrasting_ink,
+    linear,
+    relative_luminance,
+)
 from .svg import n as _n
 from .svg import rect as _rect
 from .typography import TextBlock, face, fit_display, umlaut_leading
@@ -47,6 +53,8 @@ class Ctx:
     #: The artwork itself (a PIL image covering the artwork plan), so type set on
     #: it can take its colour from what is actually underneath.
     artwork_image: Any = None
+    #: Where the picture has to be toned for the type to read (``toned_artwork``).
+    burns: list["Burn"] = field(default_factory=list)
     marks: bool = False
 
     @cached_property
@@ -56,6 +64,16 @@ class Ctx:
     @property
     def margin(self) -> float:
         return margin(self.geo)
+
+    @cached_property
+    def fallback_ink(self) -> str:
+        """Light or dark type, whichever suits the picture as a whole: one colour for
+        every line whose planned colour does not read, so neighbours do not clash."""
+        if self.artwork_sample is None:
+            tone = relative_luminance(self.palette.ground)
+        else:
+            tone = _percentile(self.artwork_sample.convert("L").histogram(), 0.5)
+        return max((_LIGHT, _DARK), key=lambda c: contrast_ratio(relative_luminance(c), tone))
 
     @cached_property
     def artwork_sample(self) -> Any:
@@ -709,57 +727,191 @@ def _front_illustrated_full(ctx: Ctx) -> str:
     return "".join(out)
 
 
-#: Light and dark type for a picture the palette's ink does not read on.
+#: Light and dark type, for where the planned colour does not read.
 _LIGHT, _DARK = "#fbf8f3", "#161412"
 #: The long edge of the artwork copy the type's colours are sampled from.
 _SAMPLE_PX = 256
+#: The WCAG contrast type needs against the picture: display type, small lines. A
+#: notch above the minimum for text on flat colour, since a picture is never flat.
+TITLE_CONTRAST, TEXT_CONTRAST = 4.5, 7.0
+#: The share of the pixels under a line that its colour has to read on.
+_COVERED = 0.95
 
 
-def _ground_under(ctx: Ctx, rect: Rect) -> str:
-    """The average colour of the artwork under ``rect`` (mm), or the palette's ground."""
-    img, plan = ctx.artwork_sample, artwork_plan(ctx.direction, ctx.geo)
-    if img is None or plan is None:
-        return ctx.palette.ground
+@dataclass(frozen=True)
+class Turned:
+    """A block of type turned about its centre: centre, size (mm) and angle (degrees)."""
+
+    cx: float
+    cy: float
+    w: float
+    h: float
+    angle: float
+
+    def corners(self, grow: float = 0.0) -> list[tuple[float, float]]:
+        t = math.radians(self.angle)
+        hw, hh = self.w / 2 + grow, self.h / 2 + grow
+        return [
+            (self.cx + dx * math.cos(t) - dy * math.sin(t), self.cy + dx * math.sin(t) + dy * math.cos(t))
+            for dx, dy in ((-hw, -hh), (hw, -hh), (hw, hh), (-hw, hh))
+        ]
+
+
+@dataclass(frozen=True)
+class Burn:
+    """Tone the picture under ``rect`` (mm) until type of luminance ``ink`` reads at
+    ``need``: darker under light type, lighter under dark type. For type that is not
+    upright, ``turned`` is the block itself; ``rect`` is then its bounding box."""
+
+    rect: Rect
+    ink: float
+    need: float
+    turned: Turned | None = None
+
+
+def _px_box(rect: Rect, plan: Rect, size: tuple[int, int]) -> tuple[int, int, int, int] | None:
+    """``rect`` (mm) in the pixels of an image covering ``plan``; None if outside it."""
     px, py, pw, ph = plan
     x, y, w, h = rect
-    sx, sy = img.width / pw, img.height / ph
+    sx, sy = size[0] / pw, size[1] / ph
     box = (
         max(0, int((x - px) * sx)), max(0, int((y - py) * sy)),
-        min(img.width, math.ceil((x + w - px) * sx)), min(img.height, math.ceil((y + h - py) * sy)),
+        min(size[0], math.ceil((x + w - px) * sx)), min(size[1], math.ceil((y + h - py) * sy)),
     )
-    if box[2] <= box[0] or box[3] <= box[1]:
-        return ctx.palette.ground
-    r, g, b = img.crop(box).resize((1, 1), Image.Resampling.BOX).getpixel((0, 0))
-    return f"#{r:02x}{g:02x}{b:02x}"
+    return box if box[2] > box[0] and box[3] > box[1] else None
 
 
-def _ink_on(ground: str, preferred: str, contrast: float = 0.4) -> str:
-    """``preferred`` where it reads on ``ground``; otherwise light or dark type."""
-    if abs(luminance(preferred) - luminance(ground)) >= contrast:
-        return preferred
-    return contrasting_ink(ground, _LIGHT, _DARK)
+def _percentile(histogram: list[int], q: float) -> float:
+    """The grey level below which a share ``q`` of the pixels fall, as relative luminance."""
+    total, seen = sum(histogram), 0
+    for level, count in enumerate(histogram):
+        seen += count
+        if seen >= q * total:
+            return linear(level / 255)
+    return 1.0
 
 
-def _paint(ink: Ink, ground: str, box: Rect, uid: str) -> tuple[str, str]:
-    """The ``(defs, fill)`` for type in ``ink`` over ``box`` (mm) on ``ground``.
+def _shape_mask(size: tuple[int, int], corners: list[tuple[float, float]]) -> Image.Image:
+    mask = Image.new("L", size, 0)
+    ImageDraw.Draw(mask).polygon(corners, fill=255)
+    return mask
 
-    A gradient runs across the whole box, so a multi-line title shares one. Its
-    stops may sit a little closer to the ground than a solid colour, since the eye
-    reads the brighter end; where either would not read, the type falls back to one
-    colour that does.
+
+def _in_pixels(points: list[tuple[float, float]], plan: Rect, size: tuple[int, int], origin=(0, 0)):
+    """Points (mm) in the pixels of an image covering ``plan``, relative to ``origin``."""
+    sx, sy = size[0] / plan[2], size[1] / plan[3]
+    return [((x - plan[0]) * sx - origin[0], (y - plan[1]) * sy - origin[1]) for x, y in points]
+
+
+def _tones(img: Image.Image, rect: Rect, plan: Rect, turned: "Turned | None" = None) -> tuple[float, float] | None:
+    """How dark and how light ``img`` (covering ``plan``) is under ``rect`` -- or under
+    the ``turned`` block inside it: the relative luminance at either end of the
+    pixels a line has to read on. None outside the picture."""
+    box = _px_box(rect, plan, img.size)
+    if box is None:
+        return None
+    crop = img.crop(box).convert("L")
+    mask = _shape_mask(crop.size, _in_pixels(turned.corners(), plan, img.size, box[:2])) if turned else None
+    histogram = crop.histogram(mask)
+    if not sum(histogram):
+        histogram = crop.histogram()
+    return _percentile(histogram, 1 - _COVERED), _percentile(histogram, _COVERED)
+
+
+def _tones_under(ctx: Ctx, rect: Rect, turned: "Turned | None" = None) -> tuple[float, float]:
+    """``_tones`` of the cover's picture, or of its ground where there is no picture."""
+    img, plan = ctx.artwork_sample, artwork_plan(ctx.direction, ctx.geo)
+    found = _tones(img, rect, plan, turned) if img is not None and plan is not None else None
+    if found is None:
+        ground = relative_luminance(ctx.palette.ground)
+        return ground, ground
+    return found
+
+
+def _paint(
+    ctx: Ctx, ink: Ink, rect: Rect, need: float, uid: str, turned: Turned | None = None
+) -> tuple[str, str]:
+    """The ``(defs, fill)`` for type in ``ink`` over ``rect`` (mm).
+
+    The planned colour -- or gradient, if both its stops read -- where it reaches
+    ``need`` against the picture; otherwise the cover's one fallback colour. Where
+    even that falls short, the picture is toned under the line (``Burn``) until it
+    does: the type always reads, and nothing is put behind it.
     """
-    stops = (ink.color, ink.gradient_to)
-    if not ink.gradient_to or any(_ink_on(ground, c, 0.28) != c for c in stops):
-        return "", _ink_on(ground, ink.color)
-    x, y, w, h = box
-    x2, y2 = {"down": (x, y + h), "across": (x + w, y), "diagonal": (x + w, y + h)}[ink.gradient]
-    defs = (
-        f'<defs><linearGradient id="{uid}" gradientUnits="userSpaceOnUse" '
-        f'x1="{_n(x)}" y1="{_n(y)}" x2="{_n(x2)}" y2="{_n(y2)}">'
-        f'<stop offset="0" stop-color="{ink.color}"/><stop offset="1" stop-color="{ink.gradient_to}"/>'
-        "</linearGradient></defs>"
-    )
-    return defs, f"url(#{uid})"
+    tones = _tones_under(ctx, rect, turned)
+
+    def worst(colour: str) -> float:
+        return min(contrast_ratio(relative_luminance(colour), t) for t in tones)
+
+    if ink.gradient_to and min(worst(ink.color), worst(ink.gradient_to)) >= need:
+        x, y, w, h = rect
+        x2, y2 = {"down": (x, y + h), "across": (x + w, y), "diagonal": (x + w, y + h)}[ink.gradient]
+        defs = (
+            f'<defs><linearGradient id="{uid}" gradientUnits="userSpaceOnUse" '
+            f'x1="{_n(x)}" y1="{_n(y)}" x2="{_n(x2)}" y2="{_n(y2)}">'
+            f'<stop offset="0" stop-color="{ink.color}"/><stop offset="1" stop-color="{ink.gradient_to}"/>'
+            "</linearGradient></defs>"
+        )
+        return defs, f"url(#{uid})"
+    colour = ink.color if worst(ink.color) >= need else ctx.fallback_ink
+    if worst(colour) < need:
+        ctx.burns.append(Burn(rect, relative_luminance(colour), need, turned))
+    return "", colour
+
+
+def _toned(img: Image.Image, light_type: bool, strength: float) -> Image.Image:
+    """``img`` darkened (under light type) or lightened (under dark type) by ``strength``, 0 to 1."""
+    if light_type:
+        return ImageEnhance.Brightness(img).enhance(1 - strength)
+    return Image.blend(img, Image.new("RGB", img.size, "white"), strength)
+
+
+def _least_toning(sample: Image.Image, burn: Burn, block: Turned, plan: Rect) -> float:
+    """The least toning of ``sample`` under ``block`` at which the burn's type reads; 0 if it does already."""
+
+    def reads(strength: float) -> bool:
+        tones = _tones(_toned(sample, burn.ink > 0.5, strength), burn.rect, plan, block)
+        # A tenth over, for what resampling to and from the small copy loses.
+        return tones is None or min(contrast_ratio(burn.ink, t) for t in tones) >= burn.need * 1.1
+
+    if reads(0.0):
+        return 0.0
+    low, high = 0.0, 1.0
+    for _ in range(10):
+        mid = (low + high) / 2
+        low, high = (low, mid) if reads(mid) else (mid, high)
+    return high
+
+
+def toned_artwork(ctx: Ctx) -> Any:
+    """The artwork with the picture toned under each line that needed it (``Burn``):
+    as little as reaches the line's contrast, at full strength under the line and
+    fading out beyond it, so no edge shows. Neighbouring lines' fades can overlap,
+    so every line is measured again afterwards and topped up where it slipped."""
+    img, plan = ctx.artwork_image, artwork_plan(ctx.direction, ctx.geo)
+    if img is None or plan is None or not ctx.burns:
+        return img
+    img, feather = img.convert("RGB"), ctx.margin * 0.6
+    for _ in range(3):
+        toned_any = False
+        for burn in ctx.burns:
+            x, y, w, h = burn.rect
+            block = burn.turned or Turned(x + w / 2, y + h / 2, w, h, 0)
+            light_type = burn.ink > 0.5
+            strength = _least_toning(ImageOps.contain(img, (_SAMPLE_PX, _SAMPLE_PX)), burn, block, plan)
+            if not strength:
+                continue
+            outer = _px_box((x - 2 * feather, y - 2 * feather, w + 4 * feather, h + 4 * feather), plan, img.size)
+            if outer is None:
+                continue
+            region = img.crop(outer)
+            mask = _shape_mask(region.size, _in_pixels(block.corners(feather), plan, img.size, outer[:2]))
+            mask = mask.filter(ImageFilter.GaussianBlur(feather * img.width / plan[2] / 2))
+            img.paste(Image.composite(_toned(region, light_type, strength), region, mask), outer[:2])
+            toned_any = True
+        if not toned_any:
+            break
+    return img
 
 
 #: How much of the panel height the title may take, per lettering size.
@@ -779,22 +931,21 @@ def _label_size(text: str, family: str, size: float, measure: float, tracking: f
 def _front_picture(ctx: Ctx) -> str:
     """The picture is the whole cover; the type is set straight onto it.
 
-    No panel, band or plate: the brief's ``lettering`` says where the type goes --
+    No panel, band or plate. The brief's ``lettering`` says where the title goes --
     across the top or bottom, in a column down one side, or on a rising diagonal --
-    how large, and in what colour, solid or a gradient. The image prompt kept that
-    area calm; the colours are checked against the pixels actually under the type
-    and give way to light or dark type where they would not read. The imprint sits
-    small at the foot, as on the house covers.
+    whether the author stands with it or apart at the top or bottom edge, how large,
+    and in what colour. Every line is checked against the pixels under it and made
+    to read (``_paint``). The imprint sits small at the foot, as on the house covers.
     """
     g, d, c, lt = ctx.geo, ctx.direction, ctx.content, ctx.direction.lettering
     b, pw, ph, m = g.bleed_mm, g.panel_w_mm, g.panel_h_mm, ctx.margin
     fam = d.type_family
+    ctx.burns.clear()
     title_ink, text_ink = lt.title_ink or Ink(color=d.ink), lt.text_ink or Ink(color=d.ink)
     column = lt.location in ("left", "right")
     measure = (pw - 2 * m) * (_COLUMN if column else 1)
     align = lt.location if column else "center" if lt.location == "diagonal" else lt.align
     x = {"left": b + m, "center": b + pw / 2, "right": b + pw - m}[align]
-    left = x - {"left": 0, "center": measure / 2, "right": measure}[align]
     author_size = _label_size(c.author, fam, pw * 0.046, measure, *_AUTHOR)
     genre_size = _label_size(c.genre_line, fam, pw * 0.032, measure, *_GENRE)
     imprint_size = pw * 0.024
@@ -802,24 +953,36 @@ def _front_picture(ctx: Ctx) -> str:
     title_text, share = cased(c.title, d.title_case), _TITLE_SHARE[lt.size]
     out = [_artwork_or_motif(ctx, artwork_plan(d, g))]
 
-    def label(text: str, size: float, top: float, fill: str, style: tuple[float, str]) -> float:
-        frag, base = draw_label(text, fam, size, x=x, cap_top=top, align=align, fill=fill,
-                                tracking=style[0], weight=style[1])
-        out.append(frag)
+    def slot(edge: str, size: float) -> float:
+        """The cap line of a line of ``size`` at the top edge, or the bottom one above the imprint."""
+        return b + m * 1.1 if edge == "top" else imprint_top - m * 0.8 - size
+
+    def line(name: str, text: str, size: float, top: float, ink: Ink, style: tuple[float, str],
+             at: tuple[float, str] = (x, align)) -> float:
+        tracking, weight = style
+        width = face(fam, weight).measure(text, tracking) * size
+        rect = (_align_x(at[0], width, at[1]), top - size * 0.15, width, size * 1.15)
+        defs, fill = _paint(ctx, ink, rect, TEXT_CONTRAST, f"{name}-ink")
+        frag, base = draw_label(text, fam, size, x=at[0], cap_top=top, align=at[1], fill=fill,
+                                tracking=tracking, weight=weight)
+        out.extend((defs, frag))
         return base
 
+    # The author stands apart only at the end the title does not already occupy.
+    title_end = {"top": "top", "left": "top", "right": "top", "bottom": "bottom"}.get(lt.location)
+    author_at = lt.author_location
+    if author_at == title_end:
+        author_at = "with_title"
+    if lt.location == "diagonal" and author_at == "with_title":
+        author_at = "top"
+    if author_at != "with_title":
+        line("author", c.author, author_size, slot(author_at, author_size), text_ink, _AUTHOR)
+
     if lt.location == "diagonal":
-        author_top, genre_top = b + m * 1.1, imprint_top - m * 0.8 - genre_size
-        for name, text, size, top, style in (
-            ("author", c.author, author_size, author_top, _AUTHOR),
-            ("genre", c.genre_line, genre_size, genre_top, _GENRE),
-        ):
-            area = (b, top - m * 0.3, pw, size + m * 0.6)
-            defs, fill = _paint(text_ink, _ground_under(ctx, area), area, f"{name}-ink")
-            out.append(defs)
-            label(text, size, top, fill, style)
-        band = (author_top + author_size * 2.2, genre_top - genre_size * 1.2)
-        out.append(_diagonal_title(ctx, title_text, share, band, title_ink))
+        # Between the author's edge and the other one, which only the imprint uses.
+        top = slot("top", 0) + (author_size * 2.2 if author_at == "top" else 0)
+        bottom = slot("bottom", author_size) - author_size * 1.2 if author_at == "bottom" else imprint_top - m
+        out.append(_diagonal_title(ctx, title_text, share, (top, bottom), title_ink, text_ink, genre_size))
     else:
         title = fit_display(
             title_text, fam, max_width=measure,
@@ -827,34 +990,29 @@ def _front_picture(ctx: Ctx) -> str:
             leading=0.98, tracking=-0.01,
         )
         title_h = title.height + face(fam, "display").cap_height * title.size
-        stack_h = author_size * 1.9 + title_h + genre_size * 2.2
-        top = imprint_top - m * 1.4 - stack_h if lt.location == "bottom" else b + m * 1.1
-        area = (left - m * 0.4, top - m * 0.4, measure + m * 0.8, stack_h + m * 0.8)
-        ground = _ground_under(ctx, area)
-        text_defs, text_fill = _paint(text_ink, ground, area, "text-ink")
-        out.append(text_defs)
-        title_top = label(c.author, author_size, top, text_fill, _AUTHOR) + author_size * 0.9
-        title_defs, title_fill = _paint(title_ink, ground, (left, title_top, measure, title_h), "title-ink")
-        frag, title_base = draw_block(title, fam, x=x, cap_top=title_top, align=align, fill=title_fill)
-        out += [title_defs, frag]
-        label(c.genre_line, genre_size, title_base + genre_size * 1.2, text_fill, _GENRE)
+        with_author = author_at == "with_title"
+        stack_h = (author_size * 1.9 if with_author else 0) + title_h + genre_size * 2.2
+        top = imprint_top - m * 1.4 - stack_h if lt.location == "bottom" else slot("top", 0)
+        if with_author:
+            top = line("author", c.author, author_size, top, text_ink, _AUTHOR) + author_size * 0.9
+        width = max(title.widths, default=0)
+        defs, fill = _paint(ctx, title_ink, (_align_x(x, width, align), top, width, title_h),
+                            TITLE_CONTRAST, "title-ink")
+        frag, title_base = draw_block(title, fam, x=x, cap_top=top, align=align, fill=fill)
+        out.extend((defs, frag))
+        line("genre", c.genre_line, genre_size, title_base + genre_size * 1.2, text_ink, _GENRE)
 
-    imprint_ink = _ink_on(
-        _ground_under(ctx, (0, imprint_top - m * 0.3, g.front_bleed_w_mm, imprint_size + m * 0.6)),
-        text_ink.color,
-    )
-    frag, _ = draw_label(
-        c.imprint.upper(), fam, imprint_size, x=b + pw / 2, cap_top=imprint_top,
-        align="center", fill=imprint_ink, tracking=0.2, weight="bold",
-    )
-    out.append(frag)
+    line("imprint", c.imprint.upper(), imprint_size, imprint_top, Ink(color=text_ink.color),
+         (0.2, "bold"), at=(b + pw / 2, "center"))
     return "".join(out)
 
 
-def _diagonal_title(ctx: Ctx, text: str, share: float, band: tuple[float, float], ink: Ink) -> str:
-    """The title on a rising baseline, centred in the ``band`` (top, bottom) between
-    the author and the genre line."""
-    g, d = ctx.geo, ctx.direction
+def _diagonal_title(
+    ctx: Ctx, text: str, share: float, band: tuple[float, float], ink: Ink, text_ink: Ink, genre_size: float
+) -> str:
+    """The title on a rising baseline with the genre line under it, centred in the
+    ``band`` (top, bottom) between the lines above and below it."""
+    g, d, genre = ctx.geo, ctx.direction, ctx.content.genre_line
     fam, centre, measure = d.type_family, g.bleed_mm + g.panel_w_mm / 2, g.panel_w_mm - 2 * ctx.margin
     theta = math.radians(-d.lettering.angle)
     cos, sin = math.cos(theta), math.sin(theta)
@@ -862,20 +1020,28 @@ def _diagonal_title(ctx: Ctx, text: str, share: float, band: tuple[float, float]
     title = fit_display(text, fam, max_width=measure / cos, max_height=g.panel_h_mm * share,
                         max_lines=3, leading=0.98, tracking=-0.01)
     w = max(title.widths, default=0)
-    h = title.height + face(fam, "display").cap_height * title.size
+    title_h = title.height + face(fam, "display").cap_height * title.size
+    h = title_h + genre_size * 2.2
     bw, bh = w * cos + h * sin, w * sin + h * cos
     # Fitted along the baseline; scaled down where the rotated block would overrun
     # the measure or the band. Line breaks hold, since everything scales with size.
     k = min(1, measure / (bw or 1), (band[1] - band[0]) / (bh or 1))
     if k < 1:
         title = replace(title, size=title.size * k, widths=[v * k for v in title.widths])
-        w, h, bw, bh = w * k, h * k, bw * k, bh * k
+        title_h, genre_size, w, h, bw, bh = (v * k for v in (title_h, genre_size, w, h, bw, bh))
 
     cy = (band[0] + band[1]) / 2
-    ground = _ground_under(ctx, (centre - bw / 2, cy - bh / 2, bw, bh))
-    defs, fill = _paint(ink, ground, (centre - w / 2, cy - h / 2, w, h), "title-ink")
-    block, _ = draw_block(title, fam, x=centre, cap_top=cy - h / 2, align="center", fill=fill)
-    return f'{defs}<g transform="rotate({d.lettering.angle} {_n(centre)} {_n(cy)})">{block}</g>'
+    # Checked over the rotated block's bounding box, the area the lines cross.
+    box = (centre - bw / 2, cy - bh / 2, bw, bh)
+    # Any toning follows the block itself, turned with it, not its bounding box.
+    turned = Turned(centre, cy, w, h, d.lettering.angle)
+    defs, fill = _paint(ctx, ink, box, TITLE_CONTRAST, "title-ink", turned)
+    genre_defs, genre_fill = _paint(ctx, text_ink, box, TEXT_CONTRAST, "genre-ink", turned)
+    block, base = draw_block(title, fam, x=centre, cap_top=cy - h / 2, align="center", fill=fill)
+    genre_line, _ = draw_label(genre, fam, genre_size, x=centre, cap_top=base + genre_size * 1.2,
+                               align="center", fill=genre_fill, tracking=_GENRE[0], weight=_GENRE[1])
+    rotate = f"rotate({d.lettering.angle} {_n(centre)} {_n(cy)})"
+    return f'{defs}{genre_defs}<g transform="{rotate}">{block}{genre_line}</g>'
 
 
 FRONT_TEMPLATES = {

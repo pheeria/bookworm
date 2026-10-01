@@ -17,13 +17,20 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, create_model
 
-from .artdirection import DRAWN_MOTIFS, ArtDirection, seed_from
+from .artdirection import (
+    DRAWN_MOTIFS,
+    STYLE_LOOK,
+    STYLES,
+    ArtDirection,
+    TypeFamily,
+    family_description,
+    seed_from,
+)
 from .core import BookCore, parse
 from .lettering import Lettering, TitleCase
 from .moods import Mood
-from .palettes import HEX
+from .palettes import HEX, PALETTE_KEYS, PALETTES_BY_KEY, describe_palettes
 from .profiles import PROFILES
-from .typography import describe
 
 #: KONSTANTEN: true of every cover, whatever the type.
 CONSTANTS = (
@@ -38,6 +45,15 @@ class Concept(BaseModel):
     colour: str = Field(description="Palette, in English: 2-3 named colours.")
     mode: Literal["a", "b", "c"] | None = Field(description="DISKURS only: the mode; otherwise null.")
     template: str
+    style: Literal[STYLES] = Field(  # type: ignore[valid-type]
+        description="The register: " + "; ".join(f"{k}: {v}" for k, v in STYLE_LOOK.items()) + "."
+    )
+    palette: Literal[PALETTE_KEYS] | None = Field(  # type: ignore[valid-type]
+        description=(
+            "A house palette, whose four colours then replace the hex values below; null "
+            "to use your own. " + describe_palettes()
+        )
+    )
     lettering: Lettering = Field(
         description="Where and how the type is set on the image; the picture keeps that area calm."
     )
@@ -58,12 +74,12 @@ class Concepts(BaseModel):
 
 @cache
 def concepts_schema(mood: Mood) -> type[Concepts]:
-    """``Concepts`` with each concept's layout and face narrowed to the mood."""
+    """``Concepts`` with the mood's layouts, and the type families that suit it named."""
     concept = create_model(
         f"Concept_{mood.key}",
         __base__=Concept,
         template=(Literal[mood.templates], ...),
-        type_family=(Literal[mood.type_families], Field(description=describe(mood.type_families))),
+        type_family=(TypeFamily, Field(description=family_description(mood.type_families))),
     )
     return create_model(
         f"Concepts_{mood.key}",
@@ -73,10 +89,11 @@ def concepts_schema(mood: Mood) -> type[Concepts]:
 
 
 def load_concepts(mood: Mood, stored: dict) -> Concepts:
-    """Concepts as stored on a cover. Those stored before lettering had only a
-    ``type_zone``, top or bottom."""
+    """Concepts as stored on a cover. Older ones had no register or house palette
+    (the mood's register, their own colours), and the oldest only a ``type_zone``."""
     stored = {**stored, "concepts": [
-        {**c, "lettering": {"location": c["type_zone"]}} if "lettering" not in c and "type_zone" in c else c
+        {"style": mood.style, "palette": None, **c}
+        | ({"lettering": {"location": c["type_zone"]}} if "lettering" not in c and "type_zone" in c else {})
         for c in stored.get("concepts", [])
     ]}
     return concepts_schema(mood).model_validate(stored)
@@ -93,18 +110,23 @@ Alternativen.
 andere Sicht darauf), ausgewählt nach der Motivlogik des Profils.
 - Jedes hat einen eigenen Kniff, abgeleitet aus den Kniff-Ansätzen und dem typischen \
 Kniff des Profils.
-- Wähle die Palette aus der Farbstrategie des Profils passend zum Stoff; nenne 2–3 \
-konkrete Farben und setze Grund-, Schrift-, Akzent- und Nebenfarbe als Hex. Die \
-Schriftfarbe muss auf dem Grund deutlich lesbar sein.{extra}
+- Wähle je Konzept das Register (style: illustrated, painterly oder typographic), \
+eine Schriftfamilie (type_family) aus allen und eine Hauspalette (palette) oder \
+eigene Farben. Profil und Lesetyp empfehlen, sie schränken nicht ein: die Familien, \
+die zum Lesetyp passen, sind genannt, und die Farbstrategie des Profils ist ein \
+Ausgangspunkt. Nenne 2–3 konkrete Farben und setze Grund-, Schrift-, Akzent- und \
+Nebenfarbe als Hex.{extra}
 - Leitplanken sind verbindlich, Tabus und Konstanten gelten immer.
 - Beschreibe Motiv, Kniff, Komposition und Farbe in sichtbaren, konkreten Begriffen \
 auf Englisch: Material, Licht, Tageszeit, Maßstab, Oberfläche.
 - Kein Text im Bild: Die Typografie wird danach exakt und direkt auf das Bild gesetzt. \
-Wähle dafür je Konzept die Schriftfamilie (type_family) und plane die Beschriftung \
-(lettering): Position (oben, unten, links \
-oder rechts als schmale Spalte, diagonal), Größe, Ausrichtung, bei diagonal den \
-Winkel, und die Farben von Titel und übrigem Text -- einfarbig oder als Verlauf aus \
-zwei Farben des Bildes. Die drei Konzepte unterscheiden sich in Position und \
+Plane dafür je Konzept die Beschriftung (lettering): wo der Titel steht (oben, unten, \
+links oder rechts als schmale Spalte, diagonal), ob der Name der Autor*in beim Titel \
+steht oder getrennt am oberen oder unteren Rand (etwa Titel oben, Autor*in unten), \
+Größe, Ausrichtung, bei diagonal den Winkel, und die Farben von Titel und übrigem \
+Text -- einfarbig oder als Verlauf aus zwei Farben des Bildes. Die Schrift muss sich \
+deutlich vom Bild darunter abheben: plane dort ruhige Flächen und Farben mit starkem \
+Kontrast. Die drei Konzepte unterscheiden sich in Position, Register und \
 Schriftfamilie; wähle, was zum Motiv passt, nicht immer dasselbe.
 - respect: die Leitplanken, übersetzt ins Englische; avoid: die Tabus, übersetzt."""
 
@@ -179,7 +201,7 @@ def image_prompt(core: BookCore, mood: Mood, concept: Concept, concepts: Concept
         f"set separately. Story: {core.place_and_time}, the mood is {', '.join(core.tone)}. "
         f"Motif: {concept.motif}. Twist: {concept.twist}. "
         f"Composition: {concept.composition}. "
-        f"Colour: {concept.colour}. Style: {style}.{respect} Avoid: {avoid}."
+        f"Colour: {concept.colour}. Style: {STYLE_LOOK[concept.style]}; {style}.{respect} Avoid: {avoid}."
     )
 
 
@@ -187,6 +209,7 @@ def to_direction(core: BookCore, mood: Mood, concepts: Concepts, index: int = 0)
     """The renderer's brief for one of the concepts."""
     concept = concepts.concepts[index]
     seed = seed_from(core.typography.title, concept.motif)
+    colours = PALETTES_BY_KEY[concept.palette] if concept.palette else concept
     return ArtDirection(
         mood=", ".join(core.tone),
         keywords=list(core.motifs),
@@ -195,10 +218,10 @@ def to_direction(core: BookCore, mood: Mood, concepts: Concepts, index: int = 0)
         artwork="generated",
         # Drawn only if the image model is unavailable.
         motif=DRAWN_MOTIFS[seed % len(DRAWN_MOTIFS)],  # type: ignore[arg-type]
-        ground=concept.ground,
-        ink=concept.ink,
-        accent=concept.accent,
-        secondary=concept.secondary,
+        ground=colours.ground,
+        ink=colours.ink,
+        accent=colours.accent,
+        secondary=colours.secondary,
         title_case=concept.title_case,
         lettering=concept.lettering,
         genre_line=core.typography.genre,

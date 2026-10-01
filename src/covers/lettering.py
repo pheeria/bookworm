@@ -69,6 +69,14 @@ class Lettering(BaseModel):
             "set horizontally."
         ),
     )
+    author_location: Literal["with_title", "top", "bottom"] = Field(
+        default="with_title",
+        description=(
+            "Where the author's name stands: with_title, just above the title; or apart, "
+            "on its own along the top or the bottom edge -- title at the top and author "
+            "at the bottom, say."
+        ),
+    )
     align: Literal["left", "center", "right"] = Field(
         default="center", description="top/bottom only: how the lines align. Columns align to their edge."
     )
@@ -109,11 +117,15 @@ _ZONES = {
 
 def zone_text(lettering: Lettering) -> str:
     """The image prompt's instruction to leave room for the type."""
+    where = f"the title and genre will be set directly onto the picture {_ZONES[lettering.location]}"
+    if lettering.author_location != "with_title":
+        where += f", and the author's name along the {lettering.author_location} edge"
+    else:
+        where = where.replace("the title and genre", "the author, title and genre")
     return (
-        f"the author, title and genre will be set directly onto the picture {_ZONES[lettering.location]}, "
-        "with nothing behind them: keep that area calm and even -- open sky, water, mist, a plain "
-        "wall, soft shadow -- with no objects, faces or busy detail in it, and the subject in the "
-        "rest of the frame; a small publisher line sits at the bottom edge"
+        f"{where}, with nothing behind them: keep those areas calm and even -- open sky, water, "
+        "mist, a plain wall, soft shadow -- with no objects, faces or busy detail in them, and the "
+        "subject in the rest of the frame; a small publisher line sits at the bottom edge"
     )
 
 
@@ -141,13 +153,14 @@ You are the typographer for a German trade publisher. You receive a painted cove
 picture and the art director's plan for the type that will be set on it as vector \
 outlines: author, title, genre line, and a small imprint at the foot.
 
-Look at where the picture actually left room. Keep the plan if the planned area is \
+Look at where the picture actually left room. Keep the plan if the planned areas are \
 calm and the type will read there; otherwise move the type to where it will -- the \
-calmest area, never across a face or the subject. Choose the face from the families \
-offered, to suit this picture and the book. Pick colours from the picture that read \
-clearly on the pixels under the type; a two-stop gradient is welcome where it echoes \
-the light in the picture, but never at the cost of legibility. Blackletter faces are \
-never set in capitals."""
+calmest area, never across a face or the subject. The author may stand with the \
+title or apart, along the top or bottom edge, wherever the picture is quietest. \
+Choose the face from the families offered, to suit this picture and the book. Pick \
+colours with strong contrast to the pixels under the type, light on dark or dark on \
+light; a two-stop gradient is welcome where it echoes the light in the picture, but \
+never at the cost of legibility. Blackletter faces are never set in capitals."""
 
 
 def _preview(image) -> str:

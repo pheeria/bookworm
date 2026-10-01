@@ -491,8 +491,8 @@ def test_response_carries_style_and_director(output_dir):
 # --- Moods ---
 
 
-def test_the_brief_schema_only_admits_the_moods_layouts_and_faces():
-    """The directors ask the model for this schema, so it cannot stray."""
+def test_the_brief_schema_keeps_the_moods_layouts_and_opens_every_face():
+    """The directors ask the model for this schema."""
     import pydantic
 
     from covers.artdirection import ArtDirection, brief_schema
@@ -504,11 +504,10 @@ def test_the_brief_schema_only_admits_the_moods_layouts_and_faces():
     # One allowed value is a const in JSON Schema, several an enum; both hold the model.
     template = props["template"]
     assert template.get("enum", [template.get("const")]) == list(suspense.templates)
-    assert props["type_family"]["enum"] == list(suspense.type_families)
     brief = fallback_direction("Ein Mord.", "Nacht", "A. Autor", "painterly", suspense).model_dump()
-    assert schema.model_validate(brief)
+    assert schema.model_validate({**brief, "type_family": "garalde"})  # no suspense face, allowed
     with pytest.raises(pydantic.ValidationError):
-        schema.model_validate({**brief, "type_family": "garalde"})
+        schema.model_validate({**brief, "type_family": "comic_sans"})
     assert brief_schema() is ArtDirection
 
 
@@ -611,7 +610,7 @@ def test_a_gradient_that_would_not_read_falls_back_to_one_colour():
     assert "<linearGradient" not in svg and 'fill="#fbf8f3"' in svg
 
 
-def test_each_moods_brief_describes_only_its_own_families():
+def test_each_moods_brief_describes_every_family_and_names_its_own():
     from covers.artdirection import brief_schema
     from covers.concepts import concepts_schema
     from covers.moods import MOODS
@@ -622,8 +621,8 @@ def test_each_moods_brief_describes_only_its_own_families():
         brief_schema(heart).model_fields["type_family"].description,
         concepts_schema(heart).model_json_schema()["$defs"]["Concept_heart"]["properties"]["type_family"]["description"],
     ):
-        for family in FAMILIES:
-            assert (f"{family}: " in description) == (family in heart.type_families), family
+        assert all(f"{family}: " in description for family in FAMILIES)
+        assert f"Suited to this reader type: {', '.join(heart.type_families)}." in description
 
 
 def test_casing_follows_each_family():
@@ -632,3 +631,63 @@ def test_casing_follows_each_family():
     from covers.artdirection import _title_case
 
     assert (_title_case("bebas"), _title_case("lora")) == ("upper", "title")
+
+
+# --- Contrast between the type and the picture ---
+
+
+def _busy(ctx):
+    """A detailed, mid-toned picture covering the artwork plan: the worst case for type."""
+    from PIL import Image
+
+    from covers.formats import px
+
+    plan = artwork_plan(ctx.direction, ctx.geo)
+    w, h = px(plan[2], 100), px(plan[3], 100)
+    return Image.effect_noise((w // 6, h // 6), 120).convert("RGB").resize((w, h))
+
+
+@pytest.mark.parametrize("location", ["top", "right", "diagonal"])
+def test_every_line_reads_on_a_busy_picture(location):
+    """No line is left below its contrast: the picture is toned under it until it reads."""
+    from covers.layout import _tones_under, toned_artwork
+    from covers.palettes import contrast_ratio
+
+    lettering = Lettering(location=location, author_location="bottom")
+    ctx = _ctx(template="picture", artwork="generated", title="Die Nacht der langen Schatten", lettering=lettering)
+    ctx.artwork_image = _busy(ctx)
+    build_front(ctx)
+    assert ctx.burns  # nothing reads on noise as it is
+    toned = _ctx(template="picture", artwork="generated", title="Die Nacht der langen Schatten", lettering=lettering)
+    toned.artwork_image = toned_artwork(ctx)
+    for burn in ctx.burns:
+        tones = _tones_under(toned, burn.rect, burn.turned)
+        assert min(contrast_ratio(burn.ink, t) for t in tones) >= burn.need
+
+
+def test_a_calm_picture_is_left_alone():
+    from PIL import Image
+
+    from covers.layout import toned_artwork
+
+    ctx = _ctx(template="picture", artwork="generated", lettering=Lettering(
+        title_ink=Ink(color="#fbf8f3"), text_ink=Ink(color="#fbf8f3")))
+    plan = artwork_plan(ctx.direction, ctx.geo)
+    ctx.artwork_image = Image.new("RGB", (int(plan[2] * 4), int(plan[3] * 4)), (20, 24, 40))
+    build_front(ctx)
+    assert not ctx.burns and toned_artwork(ctx) is ctx.artwork_image
+
+
+def test_the_author_can_stand_apart_from_the_title():
+    ctx = _ctx(template="picture", artwork="none", lettering=Lettering(location="top", author_location="bottom"))
+    paths = re.findall(r'<path d="([^"]+)"', build_front(ctx))
+    author, title = _path_y_range(paths[0]), _path_y_range(paths[1])
+    assert author[0] > title[1] + ctx.geo.panel_h_mm / 2  # the author is down at the foot
+
+
+def test_the_image_prompt_keeps_the_authors_edge_calm():
+    from covers.lettering import zone_text
+
+    apart = zone_text(Lettering(location="top", author_location="bottom"))
+    assert "author's name along the bottom edge" in apart
+    assert "the author, title and genre" in zone_text(Lettering(location="top"))

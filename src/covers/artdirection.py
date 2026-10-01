@@ -72,12 +72,14 @@ STYLE_TEMPLATES: dict[str, tuple[str, ...]] = {
 MAX_PROMPT_CHARS = 24_000
 
 
-def _family_description(families: tuple[str, ...]) -> str:
-    """What the brief is told about the type families it may choose from."""
-    return (
+def family_description(suited: tuple[str, ...] = ()) -> str:
+    """What a brief is told about the type families: all of them, and which suit
+    its reader type best."""
+    text = (
         "Name the register, not a font file; a macOS face named here is set in its "
-        "open counterpart where it is not installed. " + describe(families)
+        "open counterpart where it is not installed. " + describe(TYPE_FAMILIES)
     )
+    return f"{text} Suited to this reader type: {', '.join(suited)}." if suited else text
 
 
 #: What each layout does, for the brief's description of the ones it may choose.
@@ -123,7 +125,7 @@ class ArtDirection(BaseModel):
             "picture. The image prompt must keep that area calm -- sky, water, a plain wall."
         ),
     )
-    type_family: TypeFamily = Field(description=_family_description(TYPE_FAMILIES))
+    type_family: TypeFamily = Field(description=family_description())
     artwork: Artwork = Field(
         description=(
             "generated: have the image model paint artwork. This is the normal "
@@ -254,6 +256,20 @@ STYLE_LAYOUT: dict[str, str] = {
 }
 
 STYLES: tuple[str, ...] = tuple(STYLE_GUIDANCE)
+
+#: What each register looks like, in the image prompt's words.
+STYLE_LOOK: dict[str, str] = {
+    "illustrated": (
+        "a drawn illustration -- gouache, coloured pencil, ink and wash or cut paper -- "
+        "figurative and specific, with visible hand and texture"
+    ),
+    "painterly": "a painting, oil or gouache with real brushwork, atmosphere over outline, tonal colour",
+    "typographic": (
+        "abstract and reduced: a few flat planes or one strong sign, flat confident colour, "
+        "no literal illustration"
+    ),
+}
+assert set(STYLE_LOOK) == set(STYLES)
 DEFAULT_STYLE = "illustrated"
 
 
@@ -268,21 +284,15 @@ def system_prompt(style: str = DEFAULT_STYLE, mood: Mood | None = None) -> str:
 
 @cache
 def brief_schema(mood: Mood | None = None) -> type[ArtDirection]:
-    """The structured-output target: the brief, narrowed to what the mood allows.
-
-    Both directors ask the model for this schema, so a model cannot answer a
-    thriller with a layout or face outside the suspense mood in the first place.
-    """
+    """The structured-output target: the brief, with the mood's layouts and the
+    type families that suit it named. Any family may be chosen."""
     if mood is None:
         return ArtDirection
     return create_model(
         f"ArtDirection_{mood.key}",
         __base__=ArtDirection,
         template=(Literal[mood.templates], Field(description=_template_description(mood.templates))),
-        type_family=(
-            Literal[mood.type_families],
-            Field(description=_family_description(mood.type_families)),
-        ),
+        type_family=(TypeFamily, Field(description=family_description(mood.type_families))),
     )
 
 

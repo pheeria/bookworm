@@ -118,23 +118,24 @@ three sources:
 
 | Decided by | What |
 |---|---|
-| The **reader type** (`covers/moods.py`) | Register, palette leaning, the type families the art director may choose from |
+| The **reader type** (`covers/moods.py`) | The layout, and recommendations: a register, a palette leaning, the type families that suit it |
 | The **publisher** (`bookworm/houses.py`) | Trim format per binding, imprint wordmark (e.g. rororo for Rowohlt paperbacks) |
 | The **book** | Title, author, the blurb as the brief, `category` as the Gattungsbezeichnung |
 
 Every type uses the `picture` layout: the picture fills the cover and the type is
 set straight onto it.
 
-| Type | Register | Type families |
+| Type | Recommended register | Suited type families |
 |---|---|---|
 | `heart` | illustrated | humanist, literary_serif, garalde, neoclassical, cormorant, lora, crimson, alegreya, young_serif, josefin |
 | `suspense` | painterly | grotesk, grotesk_condensed, geometric, slab, oswald, bebas, barlow_condensed, montserrat, work_sans, gloock |
 | `trend` | illustrated | meta, geometric, grotesk_condensed, neoclassical, fraunces, dm_serif, syne, space_grotesk, abril, josefin, cinzel |
 | `discourse` | typographic | garalde, literary_serif, didone, grotesk, meta, source_serif, newsreader, caslon, spectral, inter, cormorant, grenze_gotisch |
 
-The art director still chooses per book, inside those limits: the model is asked
-for a brief whose schema only admits the type's families, so it
-cannot stray, and the no-model fallback picks from the same lists. Who writes the brief, image
+The art director chooses per book from all three registers (illustrated,
+painterly, typographic), all 23 house palettes or colours of its own, and every
+type family; the table is what it is told suits the type, and what the no-model
+fallback picks from. Who writes the brief, image
 quality and resolution are service settings (`COVERS_DIRECTOR`,
 `COVERS_IMAGE_QUALITY`), not per-cover choices. `/generate` takes the same `mood`
 for covers made outside a book, alongside its full set of overrides.
@@ -168,8 +169,10 @@ alone:
    how well each reader type fits. Cached in `book_cores` and rebuilt when the
    book's details change.
 3. **Concepts** (per cover, Prompt B): three concepts for the reader type -- a main
-   one and two alternatives -- each with its own motif, twist, composition, palette,
-   layout and type family, from the type's profile in `covers/profiles.py`. The main
+   one and two alternatives -- each with its own motif, twist, composition, register
+   (`style`), house `palette` (or its own colours), type family and lettering, from
+   the type's profile in `covers/profiles.py`. A house palette's four colours replace
+   the concept's own. The main
    concept is rendered; the other two are stored on the cover, and
    `regenerate` with `{"concept": 1}` or `2` renders one without writing new ones.
 
@@ -181,22 +184,31 @@ Book covers use one layout, `picture`: the picture is the whole cover and the ty
 is set straight onto it -- no panel, band or plate behind it. Each concept plans
 its `lettering`:
 
-- `location`: `top` or `bottom` (stacked across that third), `left` or `right` (a
-  narrow column down that side, flush to its edge), or `diagonal` (the title on a
-  rising baseline, `angle` -12° to -35°, with author and genre horizontal above
-  and below it). The publisher line always sits small at the foot.
+- `location`: where the title (and the genre line under it) goes: `top` or `bottom`
+  (stacked across that third), `left` or `right` (a narrow column down that side,
+  flush to its edge), or `diagonal` (on a rising baseline, `angle` -12° to -35°,
+  the genre line turned with it). The publisher line always sits small at the foot.
+- `author_location`: `with_title` (just above it), or apart along the `top` or
+  `bottom` edge -- title at the top and author at the foot, say.
 - `size`: `small`, `medium`, `large` or `dominant` -- how much of the cover the
   title takes.
 - `align`: for top and bottom.
 - `title_ink`, `text_ink`: a hex colour, or two stops and a direction
   (`gradient_to`, `gradient`: `down`, `across`, `diagonal`) for a linear gradient.
 
-The face (`type_family`) and casing come from the reader type's families. After
-the picture is painted, Claude looks at it with the plan and confirms or moves the
-lettering -- position, size, face, colours -- to where the picture actually left
+After the picture is painted, Claude looks at it with the plan and confirms or moves
+the lettering -- position, size, face, colours -- to where the picture actually left
 room; `art_direction_meta.lettering` says whether the `plan` or the `vision` pass
-set it. Every colour is still checked against the pixels under the type and gives
-way to cream or near-black type where it would not read. The
+set it.
+
+Every line is then held to a contrast, measured on the pixels under it rather than
+their average: WCAG 4.5:1 for the title, 7:1 for the author, genre and imprint lines,
+against the darkest and lightest 5% of those pixels. A planned colour that falls
+short gives way to the cover's one fallback, cream or near-black, whichever suits
+the picture as a whole. Where even that falls short -- a busy, mid-toned picture --
+the picture itself is toned under the line, lightened under dark type or darkened
+under light type, as little as reaches the contrast and fading out around it, so
+the type reads with nothing put behind it. The
 Typo-Daten are then set exactly as vector type. A title the Buchkern rates
 "ungeeignet" for the requested type still gets a cover, with a note saying so.
 Without Claude credentials every step falls back to the plain brief.

@@ -16,6 +16,7 @@ from covers import concepts as covers_concepts
 from covers.core import BookCore
 from covers.lettering import Lettering, zone_text
 from covers.moods import MOODS
+from covers.typography import TYPE_FAMILIES
 
 SEEDED = json.loads(SEED.read_text(encoding="utf-8"))
 BOOK = SEEDED[0]  # Alleinruhelage, Kiepenheuer & Witsch
@@ -42,10 +43,11 @@ CORE = {
 }
 
 
-def _concept(motif: str, zone: str, family: str, ground: str) -> dict:
+def _concept(motif: str, zone: str, family: str, ground: str, palette: str | None = None) -> dict:
     return {
         "motif": motif, "twist": "a paint roller left mid-stroke", "composition": "low angle",
         "colour": "ochre, teal, off-white", "mode": None, "template": "picture",
+        "style": "painterly", "palette": palette,
         "lettering": {"location": zone, "size": "large", "title_ink": {"color": "#1a1a18"},
                       "text_ink": {"color": "#1a1a18"}},
         "type_family": family, "title_case": "title", "ground": ground, "ink": "#1a1a18",
@@ -57,7 +59,7 @@ CONCEPTS = {
     "concepts": [
         _concept("a half-painted wooden house", "top", "humanist", "#e8c86a"),
         _concept("two ashtrays on a veranda rail", "bottom", "garalde", "#cfe0b4"),
-        _concept("an overgrown garden gate", "top", "literary_serif", "#f2c9c4"),
+        _concept("an overgrown garden gate", "top", "slab", "#f2c9c4", palette="pergament"),
     ],
     "respect": "none",
     "avoid": "none",
@@ -81,7 +83,7 @@ def concepts_for(mood) -> dict:
         return CONCEPTS
     return {**CONCEPTS, "concepts": [
         {**c, "template": mood.templates[i % len(mood.templates)],
-         "type_family": mood.type_families[i % len(mood.type_families)]}
+         "type_family": c["type_family"]}
         for i, c in enumerate(CONCEPTS["concepts"])
     ]}
 
@@ -218,13 +220,20 @@ def test_without_claude_the_plain_brief_still_makes_the_cover(client, monkeypatc
     assert client.get(f"/books/{SLUG}/core").status_code == 404
 
 
-def test_concepts_are_held_to_the_mood():
+def test_concepts_choose_freely_but_only_real_things():
     import pydantic
 
     schema = covers_concepts.concepts_schema(MOODS["heart"])
-    bad = {**CONCEPTS, "concepts": [{**CONCEPTS["concepts"][0], "type_family": "slab"}]}
-    with pytest.raises(pydantic.ValidationError):
-        schema.model_validate(bad)
+    schema.model_validate(CONCEPTS)  # slab is no heart family, and allowed
+    for bad in ({"type_family": "comic_sans"}, {"style": "baroque"}, {"palette": "plaid"}):
+        with pytest.raises(pydantic.ValidationError):
+            schema.model_validate({**CONCEPTS, "concepts": [{**CONCEPTS["concepts"][0], **bad}]})
+
+
+def test_concepts_stored_before_the_choice_opened_still_load():
+    old = {k: v for k, v in CONCEPTS["concepts"][0].items() if k not in ("style", "palette")}
+    parsed = covers_concepts.load_concepts(MOODS["suspense"], {**CONCEPTS, "concepts": [old]})
+    assert (parsed.concepts[0].style, parsed.concepts[0].palette) == ("painterly", None)
 
 
 @pytest.fixture
@@ -246,12 +255,12 @@ def test_the_painted_picture_decides_where_the_type_goes(client, claude, painted
     cover = client.post(f"/books/{SLUG}/covers", json={"type": "heart"}).json()
     assert kinds(claude) == ["research", "core", "concepts", "lettering"]
 
-    # Claude saw the picture and the plan, and chose among the reader type's faces.
+    # Claude saw the picture and the plan, and chose among every face.
     kw = claude[-1][1]
     image, text = kw["messages"][0]["content"]
     assert image["type"] == "image" and image["source"]["media_type"] == "image/jpeg"
     assert "'location': 'top'" in text["text"] and "Alleinruhelage" in text["text"]
-    assert kw["output_format"].model_fields["type_family"].annotation.__args__ == MOODS["heart"].type_families
+    assert kw["output_format"].model_fields["type_family"].annotation.__args__ == TYPE_FAMILIES
 
     direction = cover["art_direction"]
     assert direction["lettering"]["location"] == "diagonal"
@@ -300,6 +309,8 @@ def test_a_stored_concept_renders_without_claude(client, claude, monkeypatch):
     client.put(f"/books/{SLUG}", json={**BOOK, "pages": BOOK["pages"] + 1})  # the core is now stale
     again = client.post(f"/books/{SLUG}/covers/{cover['id']}/regenerate", json={"concept": 2}).json()
     assert again["art_direction_meta"]["source"] == "concept" and again["concept"] == 2
+    # A house palette's colours replace the concept's own; any family may be chosen.
+    assert again["color"] == "#e9e2d0" and again["art_direction"]["type_family"] == "slab"
     assert kinds(claude) == ["research", "core", "concepts"]  # nothing asked again
 
 

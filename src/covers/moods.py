@@ -1,9 +1,10 @@
-"""Moods: who a cover is for decides how it feels and what it may be set in.
+"""Moods: who a cover is for, and what tends to suit them.
 
-A mood fixes the register, steers the palette, and narrows the layouts and type
-families the brief may choose from. Every mood uses ``picture``, the layout that
-sets the type straight onto a full-bleed picture: no panels, bands or plates. The art director still decides per book --
-but inside these limits, so a thriller cannot come back in Garamond on pastel.
+A mood sets the layout -- every mood uses ``picture``, the type set straight onto
+a full-bleed picture: no panels, bands or plates -- and recommends a register, a
+palette leaning and the type families that suit it. The art director chooses per
+book from every register, palette and family; the recommendations steer it, and
+the no-model fallback brief picks from them.
 
 Pure data, so the schema can name the moods without importing the directors.
 """
@@ -17,11 +18,13 @@ MoodKey = Literal["heart", "suspense", "trend", "discourse"]
 @dataclass(frozen=True)
 class Mood:
     key: str
-    #: The register the brief is written in (see ``artdirection.STYLE_GUIDANCE``).
+    #: The register recommended, and the one briefed when no model chooses
+    #: (see ``artdirection.STYLE_GUIDANCE``).
     style: str
     #: What the reader is looking for, told to the art director.
     guidance: str
     templates: tuple[str, ...]
+    #: The type families that suit this reader best; any family may be chosen.
     type_families: tuple[str, ...]
     #: Palette tone words (see ``palettes.Palette.tone``) for the fallback brief.
     tones: tuple[str, ...]

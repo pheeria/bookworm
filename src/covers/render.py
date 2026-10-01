@@ -11,7 +11,7 @@ import zlib
 
 from . import _cairo
 from .formats import MM_PER_INCH, px
-from .layout import ARTWORK_HREF, Ctx, build_front
+from .layout import ARTWORK_HREF, Ctx, build_front, toned_artwork
 
 FILENAME = "front.png"
 
@@ -22,15 +22,16 @@ _IHDR_END = len(_PNG_SIGNATURE) + 4 + 4 + 13 + 4  # length, type, data, CRC
 def render(ctx: Ctx) -> bytes:
     """The front cover as PNG bytes, with its physical resolution stamped in."""
     g = ctx.geo
+    svg = build_front(ctx)  # first: it decides where the picture is toned for the type
     resources = {}
-    if ctx.artwork_image is not None:
+    if (artwork := toned_artwork(ctx)) is not None:
         # PNG, lightly compressed: cairo reads it directly, where any other format
         # is decoded and re-encoded as PNG first.
         buf = io.BytesIO()
-        ctx.artwork_image.save(buf, format="PNG", compress_level=1)
+        artwork.save(buf, format="PNG", compress_level=1)
         resources[ARTWORK_HREF] = buf.getvalue()
     png = _cairo.svg2png(
-        build_front(ctx).encode("utf-8"),
+        svg.encode("utf-8"),
         output_width=px(g.front_bleed_w_mm, g.dpi),
         output_height=px(g.front_bleed_h_mm, g.dpi),
         resources=resources,

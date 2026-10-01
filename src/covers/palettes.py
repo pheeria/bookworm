@@ -34,6 +34,22 @@ def luminance(hex_colour: str) -> float:
     return 0.2126 * r + 0.7152 * g + 0.0722 * b
 
 
+def linear(channel: float) -> float:
+    """An sRGB channel (0-1) as linear light."""
+    return channel / 12.92 if channel <= 0.04045 else ((channel + 0.055) / 1.055) ** 2.4
+
+
+def relative_luminance(hex_colour: str) -> float:
+    """WCAG relative luminance, 0 (black) to 1 (white)."""
+    r, g, b = (linear(c / 255) for c in rgb(hex_colour))
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+
+def contrast_ratio(a: float, b: float) -> float:
+    """WCAG contrast between two relative luminances: 1 (none) to 21."""
+    return (max(a, b) + 0.05) / (min(a, b) + 0.05)
+
+
 def darkest_and_lightest(hexes: tuple[str, ...]) -> tuple[str, str]:
     """The two ends of a palette, for mapping artwork onto it."""
     ordered = sorted(hexes, key=luminance)
@@ -98,6 +114,15 @@ PALETTES: tuple[Palette, ...] = (
 
 PALETTES_BY_KEY = {p.key: p for p in PALETTES}
 PALETTE_KEYS = tuple(p.key for p in PALETTES)
+
+
+def describe_palettes() -> str:
+    """The house palettes, one line each, for a brief to choose from."""
+    return "; ".join(
+        f"{p.key} ({p.label}): ground {p.ground}, ink {p.ink}, accent {p.accent}, "
+        f"secondary {p.secondary} -- {', '.join(p.tone)}"
+        for p in PALETTES
+    ) + "."
 
 
 def choose_palette(seed: int, keywords: tuple[str, ...] = ()) -> Palette:

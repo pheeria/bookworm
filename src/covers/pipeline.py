@@ -159,9 +159,7 @@ async def create_cover(
             # Claude looks at the picture before the type goes on; without
             # credentials the look is skipped and the plan stands.
             if direction.template == "picture" and director == "claude":
-                families = (type_family,) if type_family else (
-                    profile.type_families if profile else TYPE_FAMILIES
-                )
+                families = (type_family,) if type_family else TYPE_FAMILIES
                 direction, ad_meta["lettering"] = await _adjust_lettering(
                     direction, art.image, title=title, author=author, families=families,
                 )
