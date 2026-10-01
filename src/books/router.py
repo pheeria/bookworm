@@ -1,6 +1,6 @@
 """Book endpoints.
 
-    GET    /books           list, filter and search
+    GET    /books           list, filter and search; cacheable for 5 minutes
     GET    /books/{slug}
     POST   /books
     PUT    /books/{slug}    full replace, except generated_covers
@@ -9,7 +9,7 @@
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from pymongo.collection import Collection
 from pymongo.errors import DuplicateKeyError
 
@@ -19,6 +19,9 @@ from .models import Book, BookList
 router = APIRouter(prefix="/books", tags=["books"])
 
 Books = Annotated[Collection, Depends(db.get_db)]
+
+#: How long a client or CDN may reuse the book list: an edit shows within this.
+LIST_MAX_AGE = 5 * 60
 
 
 def _conflict(exc: DuplicateKeyError) -> HTTPException:
@@ -33,6 +36,7 @@ def not_found(slug: str) -> HTTPException:
 @router.get("", response_model=BookList)
 def list_books(
     books: Books,
+    response: Response,
     publisher: str | None = None,
     category: str | None = None,
     format: str | None = None,
@@ -44,6 +48,7 @@ def list_books(
         books, publisher=publisher, category=category, format=format,
         q=q, limit=limit, offset=offset,
     )
+    response.headers["Cache-Control"] = f"public, max-age={LIST_MAX_AGE}"
     return BookList(items=items, total=total, limit=limit, offset=offset)
 
 

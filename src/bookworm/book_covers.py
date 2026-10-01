@@ -11,7 +11,7 @@
     GET    /books/{slug}/core                  the Buchkern the covers are built on
     POST   /books/{slug}/core                  research the book again and rebuild it
     POST   /covers/upload                     add a finished cover to its book, published
-    GET    /cover-images/{image_id}.png       immutable; a new render gets a new URL
+    GET    /cover-images/{image_id}.png       cacheable for 3 days; a new render gets a new URL
 
 Nothing about a generated cover is picked by hand. The reader type decides how
 it feels and what it may be set in (``covers.moods``); the publisher decides the
@@ -633,6 +633,11 @@ async def upload_book_cover(
     return _response(doc, book.slug)
 
 
+#: How long a client or CDN may keep a cover image. Each render stores a new image
+#: under a new URL, so a cached one is never wrong, only kept.
+IMAGE_MAX_AGE = 3 * 24 * 60 * 60
+
+
 @router.get("/cover-images/{image_id}.png", response_class=Response)
 async def cover_image(image_id: str, stores: Deps) -> Response:
     """A cover's PNG. Each render stores a new image, so the URL never changes content."""
@@ -645,5 +650,5 @@ async def cover_image(image_id: str, stores: Deps) -> Response:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "not found")
     return Response(
         data, media_type="image/png",
-        headers={"Cache-Control": "public, max-age=31536000, immutable"},
+        headers={"Cache-Control": f"public, max-age={IMAGE_MAX_AGE}, immutable"},
     )

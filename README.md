@@ -89,7 +89,7 @@ runs covers alone, without MongoDB.)
 
 | Method | Path | |
 |---|---|---|
-| `GET` | `/books` | Filter with `publisher`, `category` and `format`, and search title, author and subtitle with `q`. Paginate with `limit` (default 50, max 200) and `offset`. Returns `{items, total, limit, offset}`. |
+| `GET` | `/books` | Filter with `publisher`, `category` and `format`, and search title, author and subtitle with `q`. Paginate with `limit` (default 50, max 200) and `offset`. Returns `{items, total, limit, offset}`. Cacheable for 5 minutes (`Cache-Control: public, max-age=300`). |
 | `GET` | `/books/{slug}` | One book, or 404 |
 | `POST` | `/books` | 201; 409 if the slug or ISBN is taken |
 | `PUT` | `/books/{slug}` | Full replace, except `generated_covers`; the slug may change |
@@ -153,7 +153,7 @@ for covers made outside a book, alongside its full set of overrides.
 | `GET` | `/books/{slug}/core` | The book's Buchkern, its research notes and sources. See below |
 | `POST` | `/books/{slug}/core` | Research the book again and rebuild its Buchkern |
 | `POST` | `/covers/upload` | Add a finished cover to its book, published: multipart `file`, `title`, `type`. See below. 201 |
-| `GET` | `/cover-images/{image_id}.png` | The image, cached as immutable: each render gets a new id and URL. Not under the book, so a published `url` survives a slug change |
+| `GET` | `/cover-images/{image_id}.png` | The image, cacheable for 3 days (`Cache-Control: public, max-age=259200, immutable`): each render gets a new id and URL. Not under the book, so a published `url` survives a slug change |
 
 **The Buchkern and concepts.** With Claude as director (`COVERS_DIRECTOR=claude`,
 the default), a generated cover is built in three steps rather than from the blurb
