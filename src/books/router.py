@@ -20,8 +20,8 @@ router = APIRouter(prefix="/books", tags=["books"])
 
 Books = Annotated[Collection, Depends(db.get_db)]
 
-#: How long a client or CDN may reuse the book list: an edit shows within this.
-LIST_MAX_AGE = 5 * 60
+#: The book list may be reused for 5 minutes, so an edit shows within that.
+LIST_CACHE_CONTROL = "public, max-age=300"
 
 
 def _conflict(exc: DuplicateKeyError) -> HTTPException:
@@ -48,7 +48,7 @@ def list_books(
         books, publisher=publisher, category=category, format=format,
         q=q, limit=limit, offset=offset,
     )
-    response.headers["Cache-Control"] = f"public, max-age={LIST_MAX_AGE}"
+    response.headers["Cache-Control"] = LIST_CACHE_CONTROL
     return BookList(items=items, total=total, limit=limit, offset=offset)
 
 

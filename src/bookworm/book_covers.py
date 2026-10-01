@@ -218,6 +218,8 @@ def dominant_color(img: Image.Image) -> str:
 
 #: Larger than any cover a browser should be sending.
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
+#: A cover image may be kept for 3 days.
+IMAGE_CACHE_CONTROL = "public, max-age=259200, immutable"
 
 
 def _needs_conversion(img: Image.Image) -> bool:
@@ -633,22 +635,18 @@ async def upload_book_cover(
     return _response(doc, book.slug)
 
 
-#: How long a client or CDN may keep a cover image. Each render stores a new image
-#: under a new URL, so a cached one is never wrong, only kept.
-IMAGE_MAX_AGE = 3 * 24 * 60 * 60
-
-
 @router.get("/cover-images/{image_id}.png", response_class=Response)
-async def cover_image(image_id: str, stores: Deps) -> Response:
-    """A cover's PNG. Each render stores a new image, so the URL never changes content."""
+async def cover_image(image_id: str, request: Request, stores: Deps) -> Response:
+    """A cover's PNG. Each render stores a new image, so the URL never changes content
+    and the id is its ETag: a cache revalidating it gets a 304, with no database read."""
     try:
         oid = ObjectId(image_id)
     except InvalidId:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "not found") from None
+    headers = {"Cache-Control": IMAGE_CACHE_CONTROL, "ETag": f'"{image_id}"'}
+    if request.headers.get("if-none-match") == headers["ETag"]:
+        return Response(status_code=status.HTTP_304_NOT_MODIFIED, headers=headers)
     data = await run_in_threadpool(cover_store.read_image, stores.images, oid)
     if data is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "not found")
-    return Response(
-        data, media_type="image/png",
-        headers={"Cache-Control": f"public, max-age={IMAGE_MAX_AGE}, immutable"},
-    )
+    return Response(data, media_type="image/png", headers=headers)

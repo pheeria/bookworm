@@ -127,7 +127,8 @@ def test_covers_endpoints_still_mounted(client):
 
 
 def test_the_list_is_cacheable_for_five_minutes(client):
-    assert client.get("/books").headers["cache-control"] == "public, max-age=300"
-    # Only the list: a single book, and anything that writes, are not cached.
-    slug = client.get("/books").json()["items"][0]["slug"]
+    listed = client.get("/books")
+    assert listed.headers["cache-control"] == "public, max-age=300"
+    # Only the list: a single book is not cached.
+    slug = listed.json()["items"][0]["slug"]
     assert "cache-control" not in client.get(f"/books/{slug}").headers

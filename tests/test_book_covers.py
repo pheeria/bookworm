@@ -110,8 +110,10 @@ def test_create_makes_a_draft_from_the_book(client):
     assert image.status_code == 200
     assert image.headers["content-type"] == "image/png"
     assert image.content[:8] == b"\x89PNG\r\n\x1a\n"
-    # Each render gets a new image id, so the URL's content never changes.
     assert image.headers["cache-control"] == "public, max-age=259200, immutable"  # 3 days
+    # Revalidating needs no body: the id is the ETag.
+    again = client.get(cover["url"], headers={"If-None-Match": image.headers["etag"]})
+    assert again.status_code == 304 and again.content == b""
 
     # A draft is not on the book.
     assert book_entries(client) == []
