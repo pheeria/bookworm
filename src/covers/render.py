@@ -10,7 +10,7 @@ import zlib
 
 from . import _cairo
 from .formats import MM_PER_INCH, px
-from .layout import Ctx, build_front
+from .layout import ARTWORK_HREF, Ctx, build_front
 
 FILENAME = "front.png"
 
@@ -21,10 +21,16 @@ _IHDR_END = len(_PNG_SIGNATURE) + 4 + 4 + 13 + 4  # length, type, data, CRC
 def render(ctx: Ctx) -> bytes:
     """The front cover as PNG bytes, with its physical resolution stamped in."""
     g = ctx.geo
+
+    def artwork(url: str, resource_type: str) -> bytes:
+        # The only resource the SVG names; anything else gets nothing.
+        return ctx.artwork_jpeg if url == ARTWORK_HREF and ctx.artwork_jpeg else b""
+
     png = _cairo.svg2png(
         bytestring=build_front(ctx).encode("utf-8"),
         output_width=px(g.front_bleed_w_mm, g.dpi),
         output_height=px(g.front_bleed_h_mm, g.dpi),
+        url_fetcher=artwork,
     )
     return with_dpi(png, g.dpi)
 

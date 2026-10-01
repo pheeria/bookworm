@@ -181,7 +181,7 @@ async def test_artwork_is_embedded_in_the_cover_and_reported(stub_openai, monkey
     assert result["png"][:8] == b"\x89PNG\r\n\x1a\n"
     svg = fronts[-1]
     assert "<image" in svg
-    assert "data:image/jpeg;base64," in svg
+    assert 'href="artwork:front"' in svg and "base64" not in svg
 
     meta = result["artwork"]
     assert meta is not None
@@ -418,3 +418,13 @@ async def test_the_cover_note_names_the_missing_key():
         artwork="generated", template="illustrated_full", image_model="flux-2-pro",
     )
     assert any("flux-2-pro" in n and "FAL_API_KEY" in n for n in result["notes"])
+
+
+async def test_image_work_shares_one_thread():
+    """Each thread keeps a render's peak memory, so all image work runs on one."""
+    import threading
+
+    from covers import imagethread
+
+    names = {await imagethread.run(lambda: threading.current_thread().name) for _ in range(3)}
+    assert len(names) == 1 and names.pop().startswith("covers-image")

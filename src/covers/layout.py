@@ -44,7 +44,8 @@ class Ctx:
     direction: ArtDirection
     content: Content
     seed: int
-    artwork_uri: str | None = None
+    #: The artwork as JPEG, handed to the rasteriser by name (``ARTWORK_HREF``).
+    artwork_jpeg: bytes | None = None
     #: The artwork itself (a PIL image covering the artwork plan), so type set on
     #: it can take its colour from what is actually underneath.
     artwork_image: Any = None
@@ -158,6 +159,12 @@ def draw_label(
     return frag, baseline
 
 
+#: How the SVG names the artwork. The rasteriser is handed the bytes for it
+#: (``render``): a multi-megabyte data: URI in the SVG would be parsed on every
+#: render and kept by ``urllib.parse``'s cache, one image per render.
+ARTWORK_HREF = "artwork:front"
+
+
 def _image(uri: str, rect: Rect) -> str:
     x, y, w, h = rect
     return (
@@ -193,8 +200,8 @@ def _artwork_or_motif(ctx: Ctx, rect: Rect | None) -> str:
     """Prefer generated artwork; fall back to the procedural motif in the same box."""
     if rect is None:
         return ""
-    if ctx.artwork_uri:
-        return _image(ctx.artwork_uri, rect)
+    if ctx.artwork_jpeg:
+        return _image(ARTWORK_HREF, rect)
     if ctx.direction.motif != "none":
         x, y, w, h = rect
         return motifs.draw(ctx.direction.motif, x, y, w, h, ctx.palette, ctx.seed)

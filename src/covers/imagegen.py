@@ -9,7 +9,6 @@ and resampled to the requested resolution. The response reports the artwork's
 native resolution so nobody mistakes an upscale for real 300 dpi detail.
 """
 
-import asyncio
 import base64
 import io
 import logging
@@ -21,7 +20,7 @@ from typing import Literal, get_args
 
 from PIL import Image, ImageOps
 
-from . import settings
+from . import imagethread, settings
 from .artdirection import DEFAULT_STYLE
 from .formats import MM_PER_INCH
 from .palettes import rgb
@@ -178,7 +177,7 @@ async def generate(
 
     # Decoding, resampling and toning a multi-megapixel image is CPU-bound.
     try:
-        art, (native_w, native_h) = await asyncio.to_thread(
+        art, (native_w, native_h) = await imagethread.run(
             _process, data, target_w_px, target_h_px, treatment, duotone_colours
         )
     except (OSError, ValueError) as exc:  # not an image after all
@@ -298,12 +297,11 @@ def duotone(img: Image.Image, shadow_hex: str, highlight_hex: str) -> Image.Imag
     return ImageOps.colorize(img.convert("L"), rgb(shadow_hex), rgb(highlight_hex))
 
 
-def to_data_uri(img: Image.Image, *, quality: int = 92) -> str:
-    """Encode for embedding in the SVG. JPEG, because artwork is continuous-tone."""
+def to_jpeg(img: Image.Image, *, quality: int = 92) -> bytes:
+    """JPEG, because artwork is continuous-tone."""
     buf = io.BytesIO()
     img.save(buf, format="JPEG", quality=quality, subsampling=1)
-    encoded = base64.b64encode(buf.getvalue()).decode("ascii")
-    return f"data:image/jpeg;base64,{encoded}"
+    return buf.getvalue()
 
 
 def effective_dpi(native_px: int, extent_mm: float) -> int:

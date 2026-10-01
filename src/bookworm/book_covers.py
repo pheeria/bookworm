@@ -60,6 +60,7 @@ from books.models import Book, BookTheme, Color, GeneratedCover, ReaderType
 from books.router import not_found
 from covers import concepts as covers_concepts
 from covers import core as covers_core
+from covers import imagethread
 from covers.imagegen import DEFAULT_IMAGE_MODEL, ImageModel
 from covers.models import CoverRequest, CoverResult
 from covers.moods import MOODS
@@ -618,7 +619,7 @@ async def upload_book_cover(
         raise HTTPException(
             status.HTTP_413_CONTENT_TOO_LARGE, f"covers are limited to {MAX_UPLOAD_BYTES // 2**20} MB"
         )
-    png, color = await run_in_threadpool(_decode_upload, data)
+    png, color = await imagethread.run(_decode_upload, data)
 
     cover_id = _new_cover_id()
     image_id = await run_in_threadpool(cover_store.put_image, stores.images, cover_id, png)

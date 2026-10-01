@@ -13,13 +13,14 @@ Locations:
   stay horizontal, above and below it.
 """
 
-import asyncio
+import base64
 from functools import cache
 from typing import TYPE_CHECKING, Annotated, Literal
 
 from PIL import ImageOps
 from pydantic import BaseModel, BeforeValidator, Field, create_model, field_validator
 
+from . import imagethread
 from .core import parse
 from .palettes import HEX
 from .typography import describe
@@ -151,11 +152,11 @@ never set in capitals."""
 
 def _preview(image) -> str:
     # Late: imagegen imports artdirection, which imports this module.
-    from .imagegen import to_data_uri
+    from .imagegen import to_jpeg
 
     # Shrink first: the painted picture is print-size, Claude needs a glance.
     small = ImageOps.contain(image, (PREVIEW_PX, PREVIEW_PX)).convert("RGB")
-    return to_data_uri(small, quality=85).removeprefix("data:image/jpeg;base64,")
+    return base64.b64encode(to_jpeg(small, quality=85)).decode("ascii")
 
 
 async def adjust(
@@ -174,7 +175,7 @@ async def adjust(
         content=[
             {"type": "image", "source": {
                 "type": "base64", "media_type": "image/jpeg",
-                "data": await asyncio.to_thread(_preview, image),
+                "data": await imagethread.run(_preview, image),
             }},
             {"type": "text", "text": text},
         ],

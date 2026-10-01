@@ -10,7 +10,7 @@
 import asyncio
 import logging
 
-from . import imagegen, lettering, settings
+from . import imagegen, imagethread, lettering, settings
 from .artdirection import (
     DEFAULT_STYLE,
     DRAWN_MOTIFS,
@@ -112,7 +112,7 @@ async def create_cover(
     direction = _with_motif(direction, seed)
 
     notes: list[str] = []
-    artwork_uri = None
+    artwork_jpeg = None
     artwork_image = None
     art_meta: dict | None = None
 
@@ -147,7 +147,7 @@ async def create_cover(
             direction = _with_motif(direction, seed, drawn=True)
         else:
             artwork_image = art.image
-            encoding = asyncio.create_task(asyncio.to_thread(imagegen.to_data_uri, art.image))
+            encoding = asyncio.create_task(imagethread.run(imagegen.to_jpeg, art.image))
             art_meta = dict(art.meta)
             art_meta["placement_mm"] = [round(v, 2) for v in plan]
             art_meta["effective_dpi"] = min(
@@ -168,7 +168,7 @@ async def create_cover(
                 direction, ad_meta["lettering"] = await _adjust_lettering(
                     direction, art.image, title=title, author=author, families=families,
                 )
-            artwork_uri = await encoding
+            artwork_jpeg = await encoding
 
     # The brief is the single source of truth for copy; record who wrote each
     # piece so the book record can decide whether to adopt it.
@@ -194,12 +194,12 @@ async def create_cover(
         direction=direction,
         content=content,
         seed=seed,
-        artwork_uri=artwork_uri,
+        artwork_jpeg=artwork_jpeg,
         artwork_image=artwork_image,
         marks=marks,
     )
 
-    png = await asyncio.to_thread(render, ctx)
+    png = await imagethread.run(render, ctx)
 
     return {
         "art_direction": direction.model_dump(),
