@@ -44,8 +44,6 @@ class Ctx:
     direction: ArtDirection
     content: Content
     seed: int
-    #: The artwork as JPEG, handed to the rasteriser by name (``ARTWORK_HREF``).
-    artwork_jpeg: bytes | None = None
     #: The artwork itself (a PIL image covering the artwork plan), so type set on
     #: it can take its colour from what is actually underneath.
     artwork_image: Any = None
@@ -77,7 +75,7 @@ class Ctx:
             f"{_rect(x, y, w, h, self.palette.ground)}{art}</svg>"
         )
         scale = _SAMPLE_PX / max(w, h)
-        png = _cairo.svg2png(bytestring=svg.encode(), output_width=round(w * scale),
+        png = _cairo.svg2png(svg.encode(), output_width=round(w * scale),
                              output_height=round(h * scale))
         return Image.open(io.BytesIO(png)).convert("RGB")
 
@@ -159,9 +157,7 @@ def draw_label(
     return frag, baseline
 
 
-#: How the SVG names the artwork. The rasteriser is handed the bytes for it
-#: (``render``): a multi-megabyte data: URI in the SVG would be parsed on every
-#: render and kept by ``urllib.parse``'s cache, one image per render.
+#: How the SVG names the artwork; ``render`` hands the rasteriser its bytes.
 ARTWORK_HREF = "artwork:front"
 
 
@@ -200,7 +196,7 @@ def _artwork_or_motif(ctx: Ctx, rect: Rect | None) -> str:
     """Prefer generated artwork; fall back to the procedural motif in the same box."""
     if rect is None:
         return ""
-    if ctx.artwork_jpeg:
+    if ctx.artwork_image is not None:
         return _image(ARTWORK_HREF, rect)
     if ctx.direction.motif != "none":
         x, y, w, h = rect

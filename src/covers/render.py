@@ -5,6 +5,7 @@ from that exact geometry. This is CPU-bound and synchronous -- callers should
 push it to a worker thread.
 """
 
+import io
 import struct
 import zlib
 
@@ -21,16 +22,18 @@ _IHDR_END = len(_PNG_SIGNATURE) + 4 + 4 + 13 + 4  # length, type, data, CRC
 def render(ctx: Ctx) -> bytes:
     """The front cover as PNG bytes, with its physical resolution stamped in."""
     g = ctx.geo
-
-    def artwork(url: str, resource_type: str) -> bytes:
-        # The only resource the SVG names; anything else gets nothing.
-        return ctx.artwork_jpeg if url == ARTWORK_HREF and ctx.artwork_jpeg else b""
-
+    resources = {}
+    if ctx.artwork_image is not None:
+        # PNG, lightly compressed: cairo reads it directly, where any other format
+        # is decoded and re-encoded as PNG first.
+        buf = io.BytesIO()
+        ctx.artwork_image.save(buf, format="PNG", compress_level=1)
+        resources[ARTWORK_HREF] = buf.getvalue()
     png = _cairo.svg2png(
-        bytestring=build_front(ctx).encode("utf-8"),
+        build_front(ctx).encode("utf-8"),
         output_width=px(g.front_bleed_w_mm, g.dpi),
         output_height=px(g.front_bleed_h_mm, g.dpi),
-        url_fetcher=artwork,
+        resources=resources,
     )
     return with_dpi(png, g.dpi)
 

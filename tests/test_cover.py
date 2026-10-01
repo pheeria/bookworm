@@ -545,7 +545,6 @@ def test_type_on_the_picture_takes_a_colour_that_reads_on_it(sky, expected):
         title_ink=Ink(color="#2a2a2a"), text_ink=Ink(color="#2a2a2a")))
     plan = artwork_plan(ctx.direction, ctx.geo)
     ctx.artwork_image = Image.new("RGB", (px(plan[2], 60), px(plan[3], 60)), sky)
-    ctx.artwork_jpeg = b"\xff\xd8"
     svg = build_front(ctx)
     assert f'fill="{expected}"' in svg
     # Nothing is drawn behind the type: the only rect is the canvas ground.
@@ -557,12 +556,10 @@ def test_the_rasteriser_is_handed_the_artwork():
 
     from PIL import Image
 
-    from covers.imagegen import to_jpeg
     from covers.render import render
 
     ctx = _ctx(template="picture", artwork="generated", lettering=Lettering(location="top"))
     ctx.artwork_image = Image.new("RGB", (200, 300), (200, 30, 30))
-    ctx.artwork_jpeg = to_jpeg(ctx.artwork_image)
     ctx.geo = geometry(FORMATS["kiwi_paperback"], dpi=72)
     with Image.open(io.BytesIO(render(ctx))) as png:
         r, g, b = png.convert("RGB").getpixel((png.width // 2, png.height * 3 // 4))

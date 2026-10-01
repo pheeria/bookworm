@@ -7,7 +7,7 @@ cairo-2 was found" even when cairo is installed. Extending
 resolver re-reads the variable on every lookup.
 
 Only macOS needs this. Import this module before ``cairosvg`` anywhere it is needed; its
-``svg2png`` stands in for cairosvg's, so callers can just use this module.
+``svg2png`` stands in for cairosvg's.
 """
 
 import os
@@ -42,9 +42,16 @@ except OSError as exc:  # pragma: no cover - environment-dependent
     ) from exc
 
 
-def svg2png(bytestring: bytes, **kwargs) -> bytes:
-    """``cairosvg.svg2png``, but passing on ``url_fetcher``, which it does not."""
-    return PNGSurface.convert(bytestring, **kwargs)
+def svg2png(bytestring: bytes, *, resources: dict[str, bytes] | None = None, **kwargs) -> bytes:
+    """Rasterise an SVG. Each URL it references is answered from ``resources``,
+    and with nothing otherwise: no files, no network.
+
+    Large images go in ``resources`` rather than into the SVG as data: URIs, which
+    cairosvg would parse on every render and ``urllib.parse``'s cache would keep.
+    (Through ``PNGSurface`` because cairosvg's own ``svg2png`` drops the fetcher.)
+    """
+    found = resources or {}
+    return PNGSurface.convert(bytestring, url_fetcher=lambda url, _type: found.get(url, b""), **kwargs)
 
 
 __all__ = ["svg2png"]

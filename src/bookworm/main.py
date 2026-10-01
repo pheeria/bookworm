@@ -24,6 +24,7 @@ import books
 import covers.api
 from books import db as books_db
 from covers import settings as covers_settings
+from covers.imagethread import tune_allocator
 from covers.typography import check_fonts
 
 from . import book_covers, cover_store
@@ -78,5 +79,6 @@ def __getattr__(name: str) -> FastAPI:
     if _served is None:
         load_dotenv(_ENV_FILE)
         logging.basicConfig(level=covers_settings.log_level())
+        tune_allocator()
         _served = create_app()
     return _served

@@ -16,6 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from . import settings
 from .api import cors_origins, router
+from .imagethread import tune_allocator
 from .typography import check_fonts
 
 
@@ -28,6 +29,7 @@ async def lifespan(_: FastAPI):
 
 def create_app() -> FastAPI:
     logging.basicConfig(level=settings.log_level())
+    tune_allocator()
     app = FastAPI(
         lifespan=lifespan,
         title="covers",
