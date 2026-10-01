@@ -18,7 +18,14 @@ from functools import cache
 from typing import TYPE_CHECKING, Annotated, Literal
 
 from PIL import ImageOps
-from pydantic import BaseModel, BeforeValidator, Field, create_model, field_validator
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    Field,
+    create_model,
+    field_validator,
+    model_validator,
+)
 
 from . import imagethread
 from .core import parse
@@ -95,6 +102,17 @@ class Lettering(BaseModel):
         # "horizontal", say) must not fail the whole answer.
         return max(MIN_ANGLE, min(MAX_ANGLE, value)) if isinstance(value, int | float) else value
 
+    @model_validator(mode="after")
+    def _author_apart_only_where_free(self) -> "Lettering":
+        # Apart from the title only at the edge it leaves free; a diagonal title
+        # takes the middle, so its author always stands at an edge.
+        title_edge = {"top": "top", "left": "top", "right": "top", "bottom": "bottom"}.get(self.location)
+        if self.author_location == title_edge:
+            self.author_location = "with_title"
+        elif self.location == "diagonal" and self.author_location == "with_title":
+            self.author_location = "top"
+        return self
+
     title_ink: Ink | None = Field(
         default=None,
         description="The title's colour; it must read on the picture where the title sits. Null: the brief's ink.",
@@ -117,11 +135,12 @@ _ZONES = {
 
 def zone_text(lettering: Lettering) -> str:
     """The image prompt's instruction to leave room for the type."""
-    where = f"the title and genre will be set directly onto the picture {_ZONES[lettering.location]}"
-    if lettering.author_location != "with_title":
-        where += f", and the author's name along the {lettering.author_location} edge"
+    zone = _ZONES[lettering.location]
+    if lettering.author_location == "with_title":
+        where = f"the author, title and genre will be set directly onto the picture {zone}"
     else:
-        where = where.replace("the title and genre", "the author, title and genre")
+        where = (f"the title and genre will be set directly onto the picture {zone}, and the "
+                 f"author's name along the {lettering.author_location} edge")
     return (
         f"{where}, with nothing behind them: keep those areas calm and even -- open sky, water, "
         "mist, a plain wall, soft shadow -- with no objects, faces or busy detail in them, and the "

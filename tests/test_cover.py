@@ -650,32 +650,32 @@ def _busy(ctx):
 @pytest.mark.parametrize("location", ["top", "right", "diagonal"])
 def test_every_line_reads_on_a_busy_picture(location):
     """No line is left below its contrast: the picture is toned under it until it reads."""
-    from covers.layout import _tones_under, toned_artwork
+    from covers import contrast
+    from covers.layout import compose
     from covers.palettes import contrast_ratio
 
     lettering = Lettering(location=location, author_location="bottom")
     ctx = _ctx(template="picture", artwork="generated", title="Die Nacht der langen Schatten", lettering=lettering)
     ctx.artwork_image = _busy(ctx)
-    build_front(ctx)
+    _, toned = compose(ctx)
     assert ctx.burns  # nothing reads on noise as it is
-    toned = _ctx(template="picture", artwork="generated", title="Die Nacht der langen Schatten", lettering=lettering)
-    toned.artwork_image = toned_artwork(ctx)
+    plan = artwork_plan(ctx.direction, ctx.geo)
     for burn in ctx.burns:
-        tones = _tones_under(toned, burn.rect, burn.turned)
+        tones = contrast.tones(contrast.sample(toned), burn.block, plan)
         assert min(contrast_ratio(burn.ink, t) for t in tones) >= burn.need
 
 
 def test_a_calm_picture_is_left_alone():
     from PIL import Image
 
-    from covers.layout import toned_artwork
+    from covers.layout import compose
 
     ctx = _ctx(template="picture", artwork="generated", lettering=Lettering(
         title_ink=Ink(color="#fbf8f3"), text_ink=Ink(color="#fbf8f3")))
     plan = artwork_plan(ctx.direction, ctx.geo)
     ctx.artwork_image = Image.new("RGB", (int(plan[2] * 4), int(plan[3] * 4)), (20, 24, 40))
-    build_front(ctx)
-    assert not ctx.burns and toned_artwork(ctx) is ctx.artwork_image
+    _, toned = compose(ctx)
+    assert not ctx.burns and toned is ctx.artwork_image
 
 
 def test_the_author_can_stand_apart_from_the_title():
@@ -691,3 +691,30 @@ def test_the_image_prompt_keeps_the_authors_edge_calm():
     apart = zone_text(Lettering(location="top", author_location="bottom"))
     assert "author's name along the bottom edge" in apart
     assert "the author, title and genre" in zone_text(Lettering(location="top"))
+
+
+
+def test_a_house_palette_brings_its_colours():
+    from covers.artdirection import ArtDirection
+    from covers.palettes import PALETTES_BY_KEY
+
+    brief = fallback_direction("Ein Roman.", "Titel", "A. Autor").model_dump()
+    pinned = ArtDirection.model_validate({**brief, "house_palette": "kobalt"})
+    kobalt = PALETTES_BY_KEY["kobalt"]
+    assert (pinned.ground, pinned.ink, pinned.accent) == (kobalt.ground, kobalt.ink, kobalt.accent)
+    assert apply_overrides(fallback_direction("x", "y", "z"), palette_key="kobalt").ground == kobalt.ground
+
+
+@pytest.mark.parametrize(("location", "asked", "settled"), [
+    ("top", "top", "with_title"),          # the title already holds the top edge
+    ("left", "top", "with_title"),
+    ("bottom", "bottom", "with_title"),
+    ("top", "bottom", "bottom"),
+    ("diagonal", "with_title", "top"),     # a diagonal title takes the middle
+])
+def test_the_authors_place_is_settled_once(location, asked, settled):
+    from covers.lettering import zone_text
+
+    lettering = Lettering(location=location, author_location=asked)
+    assert lettering.author_location == settled
+    assert ("author's name along" in zone_text(lettering)) == (settled != "with_title")

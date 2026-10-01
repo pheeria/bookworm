@@ -80,7 +80,9 @@ async def create_cover(
     geo = geometry(fmt, dpi=dpi)
 
     profile = MOODS[mood] if mood else None
-    style = style or (profile.style if profile else DEFAULT_STYLE)
+    # The register briefed: the caller's, else the one the reader type recommends.
+    # The brief may choose another unless the caller pinned it.
+    pinned_style, style = style, style or (profile.style if profile else DEFAULT_STYLE)
     director = director or settings.director()
 
     if brief is not None:
@@ -100,7 +102,9 @@ async def create_cover(
         artwork=artwork,
         motif=motif,
         genre_line=genre_line,
+        style=pinned_style,
     )
+    style = ad_meta["style"] = direction.style
     # Asking for a motif implies you want it drawn, even if the brief said the
     # cover should be purely typographic.
     if motif and motif != "none" and artwork is None and direction.artwork == "none":

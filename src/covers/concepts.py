@@ -20,8 +20,9 @@ from pydantic import BaseModel, Field, create_model
 from .artdirection import (
     DRAWN_MOTIFS,
     STYLE_LOOK,
-    STYLES,
     ArtDirection,
+    PaletteKey,
+    Style,
     TypeFamily,
     family_description,
     seed_from,
@@ -29,7 +30,7 @@ from .artdirection import (
 from .core import BookCore, parse
 from .lettering import Lettering, TitleCase
 from .moods import Mood
-from .palettes import HEX, PALETTE_KEYS, PALETTES_BY_KEY, describe_palettes
+from .palettes import HEX
 from .profiles import PROFILES
 
 #: KONSTANTEN: true of every cover, whatever the type.
@@ -45,15 +46,8 @@ class Concept(BaseModel):
     colour: str = Field(description="Palette, in English: 2-3 named colours.")
     mode: Literal["a", "b", "c"] | None = Field(description="DISKURS only: the mode; otherwise null.")
     template: str
-    style: Literal[STYLES] = Field(  # type: ignore[valid-type]
-        description="The register: " + "; ".join(f"{k}: {v}" for k, v in STYLE_LOOK.items()) + "."
-    )
-    palette: Literal[PALETTE_KEYS] | None = Field(  # type: ignore[valid-type]
-        description=(
-            "A house palette, whose four colours then replace the hex values below; null "
-            "to use your own. " + describe_palettes()
-        )
-    )
+    style: Style = Field(description=ArtDirection.model_fields["style"].description)
+    palette: PaletteKey | None = Field(description=ArtDirection.model_fields["house_palette"].description)
     lettering: Lettering = Field(
         description="Where and how the type is set on the image; the picture keeps that area calm."
     )
@@ -189,7 +183,11 @@ async def write_concepts(core: BookCore, mood: Mood, *, publisher: str) -> Conce
 def image_prompt(core: BookCore, mood: Mood, concept: Concept, concepts: Concepts) -> str:
     """The house master format as one paragraph, without the typography."""
     profile = PROFILES[mood.key]
-    style = profile.style
+    style = STYLE_LOOK[concept.style]
+    # The reader type's own look, only where it is in the register chosen; it would
+    # contradict any other.
+    if concept.style == mood.style:
+        style += f"; {profile.style}"
     if concept.mode and concept.mode in profile.modes:
         style += f"; {profile.modes[concept.mode]}"
     elif profile.registers and core.suspense_register in profile.registers:
@@ -201,7 +199,7 @@ def image_prompt(core: BookCore, mood: Mood, concept: Concept, concepts: Concept
         f"set separately. Story: {core.place_and_time}, the mood is {', '.join(core.tone)}. "
         f"Motif: {concept.motif}. Twist: {concept.twist}. "
         f"Composition: {concept.composition}. "
-        f"Colour: {concept.colour}. Style: {STYLE_LOOK[concept.style]}; {style}.{respect} Avoid: {avoid}."
+        f"Colour: {concept.colour}. Style: {style}.{respect} Avoid: {avoid}."
     )
 
 
@@ -209,7 +207,6 @@ def to_direction(core: BookCore, mood: Mood, concepts: Concepts, index: int = 0)
     """The renderer's brief for one of the concepts."""
     concept = concepts.concepts[index]
     seed = seed_from(core.typography.title, concept.motif)
-    colours = PALETTES_BY_KEY[concept.palette] if concept.palette else concept
     return ArtDirection(
         mood=", ".join(core.tone),
         keywords=list(core.motifs),
@@ -218,10 +215,12 @@ def to_direction(core: BookCore, mood: Mood, concepts: Concepts, index: int = 0)
         artwork="generated",
         # Drawn only if the image model is unavailable.
         motif=DRAWN_MOTIFS[seed % len(DRAWN_MOTIFS)],  # type: ignore[arg-type]
-        ground=colours.ground,
-        ink=colours.ink,
-        accent=colours.accent,
-        secondary=colours.secondary,
+        ground=concept.ground,
+        ink=concept.ink,
+        accent=concept.accent,
+        secondary=concept.secondary,
+        style=concept.style,
+        house_palette=concept.palette,
         title_case=concept.title_case,
         lettering=concept.lettering,
         genre_line=core.typography.genre,

@@ -56,10 +56,14 @@ def darkest_and_lightest(hexes: tuple[str, ...]) -> tuple[str, str]:
     return ordered[0], ordered[-1]
 
 
+def readable_on(tone: float, *inks: str) -> str:
+    """Whichever of ``inks`` has the most contrast on a ground of relative luminance ``tone``."""
+    return max(inks, key=lambda ink: contrast_ratio(relative_luminance(ink), tone))
+
+
 def contrasting_ink(ground: str, ink: str, alt: str) -> str:
     """Pick whichever of ``ink``/``alt`` reads better on ``ground``."""
-    lg = luminance(ground)
-    return ink if abs(luminance(ink) - lg) >= abs(luminance(alt) - lg) else alt
+    return readable_on(relative_luminance(ground), ink, alt)
 
 
 PALETTES: tuple[Palette, ...] = (
@@ -118,11 +122,7 @@ PALETTE_KEYS = tuple(p.key for p in PALETTES)
 
 def describe_palettes() -> str:
     """The house palettes, one line each, for a brief to choose from."""
-    return "; ".join(
-        f"{p.key} ({p.label}): ground {p.ground}, ink {p.ink}, accent {p.accent}, "
-        f"secondary {p.secondary} -- {', '.join(p.tone)}"
-        for p in PALETTES
-    ) + "."
+    return "; ".join(f"{p.key} ({p.label}): {', '.join(p.tone)}" for p in PALETTES) + "."
 
 
 def choose_palette(seed: int, keywords: tuple[str, ...] = ()) -> Palette:

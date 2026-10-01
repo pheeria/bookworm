@@ -16,6 +16,7 @@ from covers import concepts as covers_concepts
 from covers.core import BookCore
 from covers.lettering import Lettering, zone_text
 from covers.moods import MOODS
+from covers.profiles import PROFILES
 from covers.typography import TYPE_FAMILIES
 
 SEEDED = json.loads(SEED.read_text(encoding="utf-8"))
@@ -154,11 +155,16 @@ def test_a_cover_rests_on_the_researched_core_and_a_concept(client, claude):
     # The genre line is the Buchkern's Typo-Daten Gattung.
     assert cover["content"]["genre_line"] == "Roman"
 
+    # The concept chose painterly for a reader type that recommends illustrated: the
+    # register it chose is the one briefed, painted and reported.
+    assert cover["style"] == cover["art_direction"]["style"] == "painterly"
     prompt = cover["art_direction"]["image_prompt"]
     assert "Motif: a half-painted wooden house" in prompt
     assert zone_text(Lettering(location="top")) in prompt
     assert "upper third" in prompt and "nothing behind them" in prompt
     assert "no text of any kind" in prompt and '"Alleinruhelage"' not in prompt
+    assert "a painting, oil or gouache" in prompt
+    assert PROFILES["heart"].style not in prompt  # HERZ's own look is illustrated
 
 
 def test_the_core_is_researched_once_per_book(client, claude):

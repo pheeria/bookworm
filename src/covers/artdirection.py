@@ -20,7 +20,14 @@ from pydantic import BaseModel, Field, create_model, model_validator
 from . import motifs, settings
 from .lettering import Lettering, TitleCase
 from .moods import MOODS, Mood
-from .palettes import HEX, PALETTES_BY_KEY, Palette, choose_palette
+from .palettes import (
+    HEX,
+    PALETTE_KEYS,
+    PALETTES_BY_KEY,
+    Palette,
+    choose_palette,
+    describe_palettes,
+)
 from .typography import FAMILIES, TYPE_FAMILIES, describe
 
 log = logging.getLogger("covers.artdirection")
@@ -105,6 +112,25 @@ def _template_description(templates: tuple[str, ...]) -> str:
     return "Layout. " + " ".join(f"{t}: {TEMPLATE_DESCRIPTIONS[t]}." for t in templates)
 
 
+#: The registers a cover can be briefed in, and what each looks like in the image
+#: prompt's words.
+STYLE_LOOK: dict[str, str] = {
+    "illustrated": (
+        "a drawn illustration -- gouache, coloured pencil, ink and wash or cut paper -- "
+        "figurative and specific, with visible hand and texture"
+    ),
+    "painterly": "a painting, oil or gouache with real brushwork, atmosphere over outline, tonal colour",
+    "typographic": (
+        "abstract and reduced: a few flat planes or one strong sign, flat confident colour, "
+        "no literal illustration"
+    ),
+}
+DEFAULT_STYLE = "illustrated"
+STYLES: tuple[str, ...] = tuple(STYLE_LOOK)
+Style = Literal[STYLES]  # type: ignore[valid-type]
+PaletteKey = Literal[PALETTE_KEYS]  # type: ignore[valid-type]
+
+
 class ArtDirection(BaseModel):
     """The cover brief.
 
@@ -126,6 +152,17 @@ class ArtDirection(BaseModel):
         ),
     )
     type_family: TypeFamily = Field(description=family_description())
+    style: Style = Field(
+        default=DEFAULT_STYLE,
+        description="The register: " + "; ".join(f"{k}: {v}" for k, v in STYLE_LOOK.items()) + ".",
+    )
+    house_palette: PaletteKey | None = Field(
+        default=None,
+        description=(
+            "A house palette, whose four colours then replace ground, ink, accent and "
+            "secondary; null for your own. " + describe_palettes()
+        ),
+    )
     artwork: Artwork = Field(
         description=(
             "generated: have the image model paint artwork. This is the normal "
@@ -162,6 +199,13 @@ class ArtDirection(BaseModel):
         )
     )
     rationale: str = Field(description="One or two sentences on why this cover fits the book.")
+
+    @model_validator(mode="after")
+    def _house_palette(self) -> "ArtDirection":
+        if self.house_palette:
+            p = PALETTES_BY_KEY[self.house_palette]
+            self.ground, self.ink, self.accent, self.secondary = p.ground, p.ink, p.accent, p.secondary
+        return self
 
     @model_validator(mode="after")
     def _no_blackletter_capitals(self) -> "ArtDirection":
@@ -255,22 +299,8 @@ STYLE_LAYOUT: dict[str, str] = {
     ),
 }
 
-STYLES: tuple[str, ...] = tuple(STYLE_GUIDANCE)
+assert set(STYLE_GUIDANCE) == set(STYLES)
 
-#: What each register looks like, in the image prompt's words.
-STYLE_LOOK: dict[str, str] = {
-    "illustrated": (
-        "a drawn illustration -- gouache, coloured pencil, ink and wash or cut paper -- "
-        "figurative and specific, with visible hand and texture"
-    ),
-    "painterly": "a painting, oil or gouache with real brushwork, atmosphere over outline, tonal colour",
-    "typographic": (
-        "abstract and reduced: a few flat planes or one strong sign, flat confident colour, "
-        "no literal illustration"
-    ),
-}
-assert set(STYLE_LOOK) == set(STYLES)
-DEFAULT_STYLE = "illustrated"
 
 
 def system_prompt(style: str = DEFAULT_STYLE, mood: Mood | None = None) -> str:
@@ -356,22 +386,10 @@ def _genre_from_text(lowered: str) -> str:
     return "Roman"
 
 
-#: The register a locally composed image prompt opens with, when no model wrote one.
+#: How a locally composed image prompt opens, when no model wrote one.
 _PROMPT_PREAMBLE = {
-    "illustrated": (
-        "A warm figurative illustration in gouache and coloured pencil, visible "
-        "hand and texture, generous hand-mixed colour, for the cover of a German "
-        "literary novel. Depict the central place or object of this story:"
-    ),
-    "painterly": (
-        "An oil painting with real brushwork, atmospheric and tonal, for the cover "
-        "of a German literary novel. Depict the central place or scene of this "
-        "story:"
-    ),
-    "typographic": (
-        "An abstract composition of a few flat overlapping planes with matte "
-        "gouache texture, for the cover of a German literary novel, suggesting:"
-    ),
+    style: f"Cover artwork for a German literary novel: {look}. The central place or scene of this story:"
+    for style, look in STYLE_LOOK.items()
 }
 
 #: How much of the book text a locally composed image prompt carries.
@@ -430,6 +448,7 @@ def fallback_direction(
         accent=palette.accent,
         secondary=palette.secondary,
         title_case=_title_case(family),
+        style=style,
         lettering=Lettering(location=("top", "bottom")[(seed >> 4) % 2]),
         genre_line=genre,
         image_prompt=prompt_from_text(text, style),
@@ -470,6 +489,7 @@ def apply_overrides(
     artwork: str | None = None,
     motif: str | None = None,
     genre_line: str | None = None,
+    style: str | None = None,
 ) -> ArtDirection:
     """Let the caller pin any part of the brief.
 
@@ -492,13 +512,10 @@ def apply_overrides(
         data["motif"] = motif
     if genre_line:
         data["genre_line"] = genre_line
+    if style:
+        data["style"] = style
     if palette_key:
-        try:
-            p = PALETTES_BY_KEY[palette_key]
-        except KeyError:
-            raise KeyError(
-                f"unknown palette {palette_key!r}; available: "
-                f"{', '.join(sorted(PALETTES_BY_KEY))}"
-            ) from None
-        data.update(ground=p.ground, ink=p.ink, accent=p.accent, secondary=p.secondary)
+        if palette_key not in PALETTES_BY_KEY:
+            raise KeyError(f"unknown palette {palette_key!r}; available: {', '.join(sorted(PALETTES_BY_KEY))}")
+        data["house_palette"] = palette_key  # its colours follow (``_house_palette``)
     return ArtDirection.model_validate(data)

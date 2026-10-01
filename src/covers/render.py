@@ -11,7 +11,7 @@ import zlib
 
 from . import _cairo
 from .formats import MM_PER_INCH, px
-from .layout import ARTWORK_HREF, Ctx, build_front, toned_artwork
+from .layout import ARTWORK_HREF, Ctx, compose
 
 FILENAME = "front.png"
 
@@ -22,9 +22,9 @@ _IHDR_END = len(_PNG_SIGNATURE) + 4 + 4 + 13 + 4  # length, type, data, CRC
 def render(ctx: Ctx) -> bytes:
     """The front cover as PNG bytes, with its physical resolution stamped in."""
     g = ctx.geo
-    svg = build_front(ctx)  # first: it decides where the picture is toned for the type
+    svg, artwork = compose(ctx)
     resources = {}
-    if (artwork := toned_artwork(ctx)) is not None:
+    if artwork is not None:
         # PNG, lightly compressed: cairo reads it directly, where any other format
         # is decoded and re-encoded as PNG first.
         buf = io.BytesIO()

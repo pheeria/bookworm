@@ -160,13 +160,14 @@ async def test_artwork_is_embedded_in_the_cover_and_reported(stub_openai, monkey
 
     # The PNG is rasterised from this SVG; catch it on the way through.
     fronts: list[str] = []
-    build_front = render.build_front
+    compose = render.compose
 
     def spy(ctx):
-        fronts.append(build_front(ctx))
-        return fronts[-1]
+        svg, artwork = compose(ctx)
+        fronts.append(svg)
+        return svg, artwork
 
-    monkeypatch.setattr(render, "build_front", spy)
+    monkeypatch.setattr(render, "compose", spy)
 
     result = await create_cover(
         image_model="openai",
